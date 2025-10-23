@@ -10,14 +10,17 @@ const crypto = require('crypto');
 // ===== JWT Middleware =====
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
+  console.log("🔍 Raw Authorization header:", authHeader); // <-- add this
   const token = authHeader && authHeader.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Missing token' });
 
   try {
     const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    console.log("✅ Decoded payload:", decoded);
     req.user = decoded;
     next();
   } catch (err) {
+    console.error("❌ Token verification error:", err.message);
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
 };
@@ -257,11 +260,15 @@ router.post('/reset-password/:token', async (req, res) => {
 
 // ===== Add Skill =====
 router.post('/addskill', verifyToken, async (req, res) => {
-  const { card } = req.body;
+  const { card, type } = req.body; // 👈 type now included
   const userId = req.user.userId;
 
   try {
-    await Skill.create({ SkillName: card, UserId: userId });
+    await Skill.create({
+      SkillName: card,
+      UserId: userId,
+      Type: type || 'offer' // default to offer
+    });
     res.status(200).json({ message: 'Skill added successfully' });
   } catch (e) {
     res.status(500).json({ error: e.toString() });
@@ -287,6 +294,39 @@ router.get('/myskills', verifyToken, async (req, res) => {
     res.status(500).json({ error: e.toString() });
   }
 });
+
+router.get('/matchskills', verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const mySkills = await Skill.find({ UserId: userId });
+    const offered = mySkills.filter(s => s.Type === 'offer').map(s => s.SkillName);
+    const needed = mySkills.filter(s => s.Type === 'need').map(s => s.SkillName);
+
+    // 🧩 Prevent empty or undefined arrays
+    if (!offered.length && !needed.length) {
+      return res.status(200).json({ matches: [] });
+    }
+
+    const matches = await Skill.aggregate([
+      {
+        $match: {
+          $or: [
+            ...(needed.length ? [{ SkillName: { $in: needed }, Type: 'offer' }] : []),
+            ...(offered.length ? [{ SkillName: { $in: offered }, Type: 'need' }] : [])
+          ],
+          UserId: { $ne: userId }
+        }
+      },
+      { $group: { _id: '$UserId', skills: { $push: '$SkillName' } } }
+    ]);
+
+    res.status(200).json({ matches });
+  } catch (e) {
+    console.error('❌ Matchmaking error:', e);
+    res.status(500).json({ error: e.toString() });
+  }
+});
+
 
 // ===== Delete Skill =====
 router.delete('/deleteskill/:skillName', verifyToken, async (req, res) => {
@@ -335,6 +375,73 @@ router.get('/messages', verifyToken, async (req, res) => {
     }).sort({ createdAt: -1 });
 
     res.status(200).json({ messages });
+  } catch (e) {
+    res.status(500).json({ error: e.toString() });
+  }
+});
+
+const FriendRequest = require('./models/friendRequest');
+
+// ===== Send Friend Request =====
+router.post('/friend-request/:toUserId', verifyToken, async (req, res) => {
+  try {
+    const fromUserId = req.user.userId;
+    const toUserId = parseInt(req.params.toUserId);
+
+    if (fromUserId === toUserId)
+      return res.status(400).json({ error: "Can't send friend request to yourself" });
+
+    // Check for duplicates
+    const existing = await FriendRequest.findOne({
+      $or: [
+        { fromUserId, toUserId },
+        { fromUserId: toUserId, toUserId: fromUserId }
+      ]
+    });
+
+    if (existing) return res.status(400).json({ error: 'Request already exists' });
+
+    await FriendRequest.create({ fromUserId, toUserId });
+    res.status(200).json({ message: 'Friend request sent' });
+  } catch (e) {
+    res.status(500).json({ error: e.toString() });
+  }
+});
+
+// ===== View Incoming Friend Requests =====
+router.get('/friend-requests', verifyToken, async (req, res) => {
+  try {
+    const toUserId = req.user.userId;
+    const requests = await FriendRequest.find({ toUserId, status: 'pending' });
+    res.status(200).json({ requests });
+  } catch (e) {
+    res.status(500).json({ error: e.toString() });
+  }
+});
+
+// ===== Accept or Decline Request =====
+router.post('/friend-request/:id/respond', verifyToken, async (req, res) => {
+  try {
+    const { action } = req.body; // 'accept' or 'decline'
+    const requestId = req.params.id;
+    const toUserId = req.user.userId;
+
+    const request = await FriendRequest.findById(requestId);
+    if (!request) return res.status(404).json({ error: 'Request not found' });
+
+    if (request.toUserId !== toUserId)
+      return res.status(403).json({ error: 'Not authorized to modify this request' });
+
+    if (action === 'accept') {
+      request.status = 'accepted';
+    } else if (action === 'decline') {
+      request.status = 'declined';
+    } else {
+      return res.status(400).json({ error: 'Invalid action' });
+    }
+
+    await request.save();
+    res.status(200).json({ message: `Request ${request.status}` });
   } catch (e) {
     res.status(500).json({ error: e.toString() });
   }
