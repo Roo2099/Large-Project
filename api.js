@@ -52,7 +52,7 @@ router.post('/register', async (req, res) => {
     const sgMail = require('@sendgrid/mail');
     sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-    const verifyURL = `${process.env.BASE_URL}/api/verify/${token}`;
+    const verifyURL = `${process.env.BASE_URL}/confirm-email/${token}`;
 
     const msg = {
   to: login,
