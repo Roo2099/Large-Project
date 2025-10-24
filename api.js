@@ -201,7 +201,7 @@ router.post('/request-reset', async (req, res) => {
     // send email via SendGrid
     const sgMail = require('@sendgrid/mail');
     sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-    const resetURL = `${process.env.BASE_URL}/api/reset-password/${resetToken}`;
+    const resetURL = `${process.env.BASE_URL}/reset-password/${resetToken}`;
 
     const msg = {
       to: login,
