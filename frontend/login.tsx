@@ -8,6 +8,7 @@ import LockIcon from "../assets/lock.svg?react"
 
 
 const Login = () => {
+
     // Initialize Firebase authentication and navigation
     const navigate = useNavigate();
     
@@ -22,8 +23,13 @@ const Login = () => {
             <div className="bg-white text-black rounded-2xl shadow-lg w-full max-w-md overflow-hidden">
                 {/* Top colored header with title */}
                 <div className="flex items-center space-x-2 py-4 px-4 text-[#3F4F83]">
+                <Link
+                    to="/"
+                    className="flex items-center space-x-2 text-[#3F4F83] hover:opacity-90 transition-all duration-200"
+                >
                     <LogoIcon className="w-8 h-8 text-current scale-150" />
                     <h3 className="text-2xl text-current px-3">SkillSwap</h3>
+                    </Link>
                 </div>
                     {/*Outer card */}
                     <div className="bg-slate-100 text-black p-4 rounded-b-lg-2xl w-full max-w-md ">
@@ -71,19 +77,19 @@ const Login = () => {
                                 disabled={authing}
                                 className="w-full bg-white text-white mt-2 py-3 rounded-md font-semibold hover:bg-gray-200 transition"
                             >
-                                Sign In
+                            {authing ? "Signing in..." : "Sign In"}
                             </button>
 
                             {/*Forgot Password*/}
-                            <p className="mt-4 text-left text-gray-400">
-                            <Link
-                                to="/Signup"
-                                className="text-white hover:underline font-semibold"
-                            >
-                                Forgot Password?
-                            </Link>
-                            </p>
-
+                                <p className="mt-4 text-left text-gray-400">
+                                <Link
+                                    to="/forgot-password"
+                                    className="text-[#3F4F83] hover:underline font-semibold"
+                                >
+                                    Forgot Password?
+                                </Link>
+                                </p>
+                                
                             {/*Sign up*/}
                             <p className="mt-4 text-left text-gray-400">
                             Don't have an account?{" "}
