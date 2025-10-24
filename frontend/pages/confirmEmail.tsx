@@ -25,7 +25,7 @@ export default function ConfirmEmail() {
         {message.startsWith("✅") && (
           <Link
             to="/login"
-            className="px-4 py-2 bg-[#3f4f83] text-white rounded-lg hover:bg-[#535bf2] transition"
+            className="px-4 py-2 bg-[#3f4f83] !text-white rounded-lg hover:bg-[#535bf2] transition mt-4 inline-block"
           >
             Go to Login
           </Link>
