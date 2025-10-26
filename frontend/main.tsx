@@ -16,6 +16,15 @@ import ForgotPassword from './pages/forgotpassword.tsx'
 import ConfirmEmail from './pages/confirmEmail.tsx'
 // @ts-ignore
 import ResetPassword from './pages/resetPassword.tsx'
+// @ts-ignore
+import VerifyEmail from "./pages/verifyEmail.tsx";
+// @ts-ignore
+import Onboarding from "./pages/onboarding.tsx";
+// @ts-ignore
+import Dashboard from "./pages/dashboard.tsx";
+// @ts-ignore
+import Messages from "./pages/messages.tsx";
+
 
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 
@@ -26,10 +35,14 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Register />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/forgotpassword" element={<ForgotPassword />} />
         <Route path="/confirm-email/:token" element={<ConfirmEmail />} />
         <Route path="/reset-password/:token" element={<ResetPassword />} />
+        <Route path="/verify-email" element={<VerifyEmail />} />
         <Route path="*" element={<Navigate to="/" />} />
+        <Route path="/onboarding" element={<Onboarding />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/messages" element={<Messages />} />
       </Routes>
     </Router>
   </StrictMode>,
