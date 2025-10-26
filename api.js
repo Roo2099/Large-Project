@@ -366,7 +366,7 @@ router.post('/messages', verifyToken, async (req, res) => {
   }
 });
 
-// Get Messages for current user
+// ===== Get Messages with User Names =====
 router.get('/messages', verifyToken, async (req, res) => {
   const userId = req.user.userId;
   try {
@@ -374,8 +374,46 @@ router.get('/messages', verifyToken, async (req, res) => {
       $or: [{ from: userId }, { to: userId }]
     }).sort({ createdAt: -1 });
 
-    res.status(200).json({ messages });
+    // get all involved users
+    const userIds = [...new Set(messages.flatMap(m => [m.from, m.to]))];
+    const users = await User.find({ UserID: { $in: userIds } }, 'UserID FirstName');
+    const nameMap = Object.fromEntries(users.map(u => [u.UserID, u.FirstName]));
+
+    // add first names
+    const messagesWithNames = messages.map(m => ({
+      ...m.toObject(),
+      fromName: nameMap[m.from] || `User ${m.from}`,
+      toName: nameMap[m.to] || `User ${m.to}`
+    }));
+
+    res.status(200).json({ messages: messagesWithNames });
   } catch (e) {
+    console.error('❌ Message fetch error:', e);
+    res.status(500).json({ error: e.toString() });
+  }
+});
+
+// ===== Delete a Message =====
+router.delete('/messages/:id', verifyToken, async (req, res) => {
+  const userId = req.user.userId;
+  const { id } = req.params;
+
+  try {
+    const message = await Message.findById(id);
+
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+
+    // ✅ Only allow delete if user sent OR received the message
+    if (message.from !== userId && message.to !== userId) {
+      return res.status(403).json({ error: 'Not authorized to delete this message' });
+    }
+
+    await Message.findByIdAndDelete(id);
+    res.status(200).json({ success: true });
+  } catch (e) {
+    console.error('❌ Message delete error:', e);
     res.status(500).json({ error: e.toString() });
   }
 });
@@ -443,6 +481,32 @@ router.post('/friend-request/:id/respond', verifyToken, async (req, res) => {
     await request.save();
     res.status(200).json({ message: `Request ${request.status}` });
   } catch (e) {
+    res.status(500).json({ error: e.toString() });
+  }
+});
+
+// ===== Improved User Search =====
+router.get('/users', async (req, res) => {
+  const { name } = req.query;
+
+  try {
+    if (!name) {
+      const users = await User.find({}, 'UserID FirstName LastName');
+      return res.json({ users });
+    }
+
+    // 🔍 Return *all* matches (not just one)
+    const users = await User.find(
+      { FirstName: { $regex: new RegExp(name, 'i') } },
+      'UserID FirstName LastName'
+    );
+
+    if (!users || users.length === 0)
+      return res.status(404).json({ message: 'No users found' });
+
+    res.json({ users });
+  } catch (e) {
+    console.error('❌ User lookup error:', e);
     res.status(500).json({ error: e.toString() });
   }
 });
