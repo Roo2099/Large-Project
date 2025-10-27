@@ -565,12 +565,14 @@ export default function DashboardPage() {
                 className="absolute right-0 mt-2 !bg-white text-[#313131] rounded-md shadow-lg border border-gray-200 min-w-40 z-50"
               >
                 <button
+                  onClick={() => (window.location.href = "/signout")}
                   className="w-full text-left px-4 py-2 text-sm text-red-600 !bg-white hover:bg-red-50 rounded-md"
                   role="menuitem"
                   type="button"
                 >
                   Sign Out
                 </button>
+
               </div>
             )}
           </div>
