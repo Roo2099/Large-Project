@@ -24,6 +24,8 @@ import Onboarding from "./pages/onboarding.tsx";
 import Dashboard from "./pages/dashboard.tsx";
 // @ts-ignore
 import Messages from "./pages/messages.tsx";
+// @ts-ignore
+import SignOut from './pages/signout.tsx';
 
 
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
@@ -43,6 +45,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/messages" element={<Messages />} />
+        <Route path="/signout" element={<SignOut />} />
       </Routes>
     </Router>
   </StrictMode>,
