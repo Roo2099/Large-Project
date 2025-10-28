@@ -26,6 +26,10 @@ import Dashboard from "./pages/dashboard.tsx";
 import Messages from "./pages/messages.tsx";
 // @ts-ignore
 import SignOut from './pages/signout.tsx';
+// @ts-ignore
+import Offers from './pages/offers.tsx';
+// @ts-ignore
+import Profile from "./pages/profile.tsx";
 
 
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
@@ -44,7 +48,9 @@ createRoot(document.getElementById('root')!).render(
         <Route path="*" element={<Navigate to="/" />} />
         <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/offers" element={<Offers />} />
         <Route path="/messages" element={<Messages />} />
+        <Route path="/profile" element={<Profile />} /> 
         <Route path="/signout" element={<SignOut />} />
       </Routes>
     </Router>
