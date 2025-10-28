@@ -120,18 +120,9 @@ router.post('/register', async (req, res) => {
 router.get('/verify/:token', async (req, res) => {
   console.log("🟢 /verify hit with token:", req.params.token);
   try {
-    const user = await Promise.race([
-      User.findOne({ verificationToken: req.params.token }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('DB timeout')), 8000))
-    ]);
-
-    console.log("🟠 Query complete. User:", user ? user.Login : 'null');
-
+    const user = await User.findOne({ verificationToken: req.params.token });
     if (!user) {
-      console.log("🔴 Invalid or expired token");
-      return res
-        .status(400)
-        .send('<h2 style="color:red;">❌ Invalid or expired verification link.</h2>');
+      return res.status(400).json({ message: "Invalid or expired verification link." });
     }
 
     if (!user.verified) {
@@ -141,19 +132,37 @@ router.get('/verify/:token', async (req, res) => {
       console.log("🟢 User verified and saved");
     }
 
-    res.send(`
-      <html><body style="font-family:sans-serif;text-align:center;margin-top:10%;">
-        <h2 style="color:green;">✅ Email verified successfully!</h2>
-        <p>You can now log in to SkillSwap.</p>
-        <a href="/" style="color:white;background:#4CAF50;padding:10px 20px;border-radius:5px;text-decoration:none;">Go to Login</a>
-      </body></html>
-    `);
-    console.log("🟩 Success response sent");
-  } catch (e) {
-    console.error("❌ Verification error:", e);
-    res.status(500).send('<h2>⚠️ Something went wrong verifying your email.</h2>');
+    const jwtToken = jwt.sign(
+      { userId: user.UserID, firstName: user.FirstName, lastName: user.LastName },
+      process.env.ACCESS_TOKEN_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    const acceptsHTML = req.headers.accept?.includes("text/html");
+    if (acceptsHTML) {
+      return res.send(`
+        <html><body style="font-family:sans-serif;text-align:center;margin-top:10%;">
+          <h2 style="color:green;">Email verified successfully!</h2>
+          <p>You can now close this tab and return to the app.</p>
+        </body></html>
+      `);
+    }
+
+    return res.status(200).json({
+      message: "Email verified successfully",
+      token: jwtToken,
+      user: {
+        id: user.UserID,
+        firstName: user.FirstName,
+        lastName: user.LastName,
+      },
+    });
+  } catch (err) {
+    console.error("❌ Verification error:", err);
+    res.status(500).json({ message: "An error occurred while verifying your email." });
   }
 });
+
 
 // ===== Login =====
 router.post('/login', async (req, res) => {
@@ -260,16 +269,15 @@ router.post('/reset-password/:token', async (req, res) => {
 
 // ===== Add Skill =====
 router.post('/addskill', verifyToken, async (req, res) => {
-  const { card, type } = req.body; // 👈 type now included
-  const userId = req.user.userId;
-
   try {
-    await Skill.create({
-      SkillName: card,
-      UserId: userId,
-      Type: type || 'offer' // default to offer
+    const { SkillName, Type } = req.body;
+    const newSkill = new Skill({
+      SkillName,
+      Type,
+      UserID: req.user.userId, // ✅ THIS LINE IS CRITICAL
     });
-    res.status(200).json({ message: 'Skill added successfully' });
+    await newSkill.save();
+    res.status(200).json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.toString() });
   }
@@ -288,50 +296,63 @@ router.get('/browseskills', async (req, res) => {
 // ===== My Skills =====
 router.get('/myskills', verifyToken, async (req, res) => {
   try {
-    const mySkills = await Skill.find({ UserId: req.user.userId });
+    const mySkills = await Skill.find({ UserID: req.user.userId }); // ✅ fixed
     res.status(200).json({ mySkills });
   } catch (e) {
     res.status(500).json({ error: e.toString() });
   }
 });
 
-router.get('/matchskills', verifyToken, async (req, res) => {
+// --- Matchmaking with user details ---
+ router.get("/matchskills", verifyToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
-    const mySkills = await Skill.find({ UserId: userId });
-    const offered = mySkills.filter(s => s.Type === 'offer').map(s => s.SkillName);
-    const needed = mySkills.filter(s => s.Type === 'need').map(s => s.SkillName);
-
-    // 🧩 Prevent empty or undefined arrays
-    if (!offered.length && !needed.length) {
-      return res.status(200).json({ matches: [] });
+    const mySkills = await Skill.find({ UserID: req.user.userId });
+    if (!mySkills.length) {
+      console.log("No skills found for user:", req.user.userId);
+      return res.json({ matches: [] });
     }
 
-    const matches = await Skill.aggregate([
+    const rawMatches = await Skill.aggregate([
       {
         $match: {
-          $or: [
-            ...(needed.length ? [{ SkillName: { $in: needed }, Type: 'offer' }] : []),
-            ...(offered.length ? [{ SkillName: { $in: offered }, Type: 'need' }] : [])
-          ],
-          UserId: { $ne: userId }
-        }
+          SkillName: { $in: mySkills.map((s) => s.SkillName) },
+          UserID: { $ne: req.user.userId },
+        },
       },
-      { $group: { _id: '$UserId', skills: { $push: '$SkillName' } } }
+      {
+        $group: {
+          _id: "$UserID",
+          skills: { $addToSet: "$SkillName" },
+        },
+      },
     ]);
 
-    res.status(200).json({ matches });
-  } catch (e) {
-    console.error('❌ Matchmaking error:', e);
-    res.status(500).json({ error: e.toString() });
+    const matchesWithNames = await Promise.all(
+      rawMatches.map(async (m) => {
+        const user = await User.findOne(
+          { UserID: m._id },
+          { FirstName: 1, LastName: 1 }
+        );
+        return {
+          _id: m._id,
+          firstName: user?.FirstName || "Unknown",
+          lastName: user?.LastName || "",
+          skills: m.skills,
+        };
+      })
+    );
+
+    res.json({ matches: matchesWithNames });
+  } catch (err) {
+    console.error("Error fetching matchskills:", err);
+    res.status(500).json({ message: "Server error fetching matches" });
   }
 });
-
 
 // ===== Delete Skill =====
 router.delete('/deleteskill/:skillName', verifyToken, async (req, res) => {
   try {
-    await Skill.deleteOne({ SkillName: req.params.skillName, UserId: req.user.userId });
+    await Skill.deleteOne({ SkillName: req.params.skillName, UserID: req.user.userId }); // ✅ fixed
     res.status(200).json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.toString() });
@@ -510,5 +531,26 @@ router.get('/users', async (req, res) => {
     res.status(500).json({ error: e.toString() });
   }
 });
+
+// ===== Update Name =====
+router.post('/update-name', verifyToken, async (req, res) => {
+  try {
+    const { firstName, lastName } = req.body;
+    if (!firstName || !lastName) {
+      return res.status(400).json({ error: "First and last name required" });
+    }
+
+    await User.updateOne(
+      { UserID: req.user.userId },
+      { $set: { FirstName: firstName, LastName: lastName } }
+    );
+
+    res.status(200).json({ success: true });
+  } catch (err) {
+    console.error('Update name error:', err);
+    res.status(500).json({ error: err.toString() });
+  }
+});
+
 
 module.exports = router;
