@@ -104,6 +104,22 @@ async function getMySkills(): Promise<Skill[]> {
   return raw.mySkills ?? [];
 }
 
+async function deleteSkill(skillName: string): Promise<boolean> {
+  const token = getToken();
+  if (!token) return false;
+
+  const res = await fetch(`${API_ROOT}/deleteskill/${encodeURIComponent(skillName)}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const data = await res.json();
+  return res.ok && data.success;
+}
+
+
 async function getMessages(): Promise<Message[]> {
   const token = getToken();
   if (!token) return [];
@@ -512,9 +528,9 @@ export default function DashboardPage() {
           <nav className="flex items-center justify-center gap-0 text-sm">
             {[
               { label: "Dashboard", href: "/dashboard" },
-              { label: "Offers", href: "/dashboard" },
+              { label: "Offers", href: "/offers" },
               { label: "Messages", href: "/messages" },
-              { label: "Profile", href: "/dashboard" },
+              { label: "Profile", href: "/profile" },
             ].map((item, idx) => {
               const isActive = item.label === "Dashboard";
               const base =
@@ -659,6 +675,127 @@ export default function DashboardPage() {
                 )}
               </section>
             </div>
+
+                      {/* ----- Manage My Skills ----- */}
+          <section aria-labelledby="manage-skills" className="bg-white rounded-xl shadow p-5 border border-gray-200">
+            <h2 id="manage-skills" className="text-lg font-medium text-gray-800 mb-3">
+              Manage My Skills
+            </h2>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const form = e.currentTarget;
+                const skillName = (form.elements.namedItem("skillName") as HTMLInputElement).value.trim();
+                const type = (form.elements.namedItem("type") as HTMLSelectElement).value;
+                const token = localStorage.getItem("token");
+
+                if (!skillName) return alert("Enter a skill name");
+
+                const res = await fetch(`${API_ROOT}/addskill`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                  },
+                  body: JSON.stringify({ SkillName: skillName, Type: type }),
+                });
+
+                if (res.ok) {
+                  alert("Skill added successfully!");
+                  window.location.reload();
+                } else {
+                  alert("Failed to add skill");
+                }
+              }}
+              className="flex flex-col sm:flex-row gap-3 items-center"
+            >
+              <input
+                name="skillName"
+                type="text"
+                placeholder="Enter a skill name..."
+                className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-[#3F4F83] focus:outline-none"
+              />
+              <select
+                name="type"
+                className="border border-gray-300 rounded-md px-2 py-2 text-sm focus:ring-2 focus:ring-[#3F4F83] focus:outline-none"
+              >
+                <option value="offer">Offer</option>
+                <option value="need">Need</option>
+              </select>
+              <button
+                type="submit"
+                className="bg-[#3F4F83] text-white px-4 py-2 rounded-md font-medium hover:bg-[#2e3b6b] transition"
+              >
+                Add Skill
+              </button>
+            </form>
+            {/* View All Skills Section */}
+                <div className="mt-6">
+                  <button
+                    onClick={async () => {
+                      const token = localStorage.getItem("token");
+                      if (!token) return alert("Not logged in");
+
+                      try {
+                        const res = await fetch(`${API_ROOT}/myskills`, {
+                          headers: { Authorization: `Bearer ${token}` },
+                        });
+                        if (!res.ok) throw new Error(await res.text());
+                        const data = await res.json();
+
+                        const mySkills = data.mySkills || [];
+                        if (mySkills.length === 0) {
+                          alert("You have no skills yet!");
+                          return;
+                        }
+                        // Display prompt to delete any skill
+                          const skillNames = mySkills.map((s: any) => s.SkillName);
+                          const choice = prompt(
+                            `Your Skills:\n\n${skillNames
+                              .map((n: string, i: number) => `${i + 1}. ${n}`)
+                              .join("\n")}\n\nEnter the number of the skill you want to delete, or press Cancel:`
+                          );
+
+                          if (choice) {
+                            const idx = parseInt(choice, 10) - 1;
+                            if (!isNaN(idx) && mySkills[idx]) {
+                              const skillToDelete = mySkills[idx].SkillName;
+                              if (confirm(`Are you sure you want to delete "${skillToDelete}"?`)) {
+                                const success = await deleteSkill(skillToDelete);
+                                if (success) {
+                                  alert(`"${skillToDelete}" deleted successfully.`);
+                                  window.location.reload();
+                                } else {
+                                  alert("Failed to delete skill.");
+                                }
+                              }
+                            }
+                          }
+
+                        // Build a display string
+                        const list = mySkills
+                          .map(
+                            (s: any) =>
+                              `• ${s.SkillName} (${s.Type === "offer" ? "Offering" : "Needing"})`
+                          )
+                          .join("\n");
+
+                        alert(`Your Skills:\n\n${list}`);
+                      } catch (err: any) {
+                        console.error(err);
+                        alert("Failed to fetch skills.");
+                      }
+                    }}
+                    className="bg-[#3F4F83] text-white px-4 py-2 rounded-md font-medium hover:bg-[#2e3b6b] transition"
+                  >
+                    Show All My Skills
+                  </button>
+                </div>
+
+          </section>
+          
+
 
             {/* RIGHT */}
             <div className="flex flex-col gap-6">
