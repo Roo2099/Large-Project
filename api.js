@@ -271,14 +271,40 @@ router.post('/reset-password/:token', async (req, res) => {
 router.post('/addskill', verifyToken, async (req, res) => {
   try {
     const { SkillName, Type } = req.body;
+    const userId = req.user.userId;
+
+    console.log("🟢 AddSkill Triggered:");
+    console.log("   Incoming SkillName:", SkillName);
+    console.log("   Incoming Type:", Type);
+    console.log("   From UserID:", userId);
+
+    // ✅ Normalize type (avoids Offer/Need mismatch)
+    const normalizedType = Type?.toLowerCase() === 'offer' ? 'offer' : 'need';
+    console.log("   Normalized Type:", normalizedType);
+
+    // ✅ Prevent duplicates
+    const existing = await Skill.findOne({ UserID: userId, SkillName, Type: normalizedType });
+    if (existing) {
+      console.log("⚠️ Duplicate skill detected, skipping save.");
+      return res.status(400).json({ message: "You already have this skill added." });
+    }
+
+    // ✅ Create new skill
     const newSkill = new Skill({
       SkillName,
-      Type,
-      UserID: req.user.userId, // ✅ THIS LINE IS CRITICAL
+      Type: normalizedType,
+      UserID: userId,
     });
-    await newSkill.save();
-    res.status(200).json({ success: true });
+
+    console.log("💾 Saving new skill:", newSkill);
+
+    await newSkill.save(); // <- This line *must* succeed
+
+    console.log("✅ Skill saved successfully with _id:", newSkill._id);
+    res.status(200).json({ success: true, message: "Skill added successfully." });
+
   } catch (e) {
+    console.error("❌ Error in /addskill:", e);
     res.status(500).json({ error: e.toString() });
   }
 });
@@ -304,48 +330,78 @@ router.get('/myskills', verifyToken, async (req, res) => {
 });
 
 // --- Matchmaking with user details ---
- router.get("/matchskills", verifyToken, async (req, res) => {
+ // --- Matchmaking with complementary Offer/Need logic ---
+router.get("/matchskills", verifyToken, async (req, res) => {
   try {
+    // 1️⃣ Get the logged-in user's skills
     const mySkills = await Skill.find({ UserID: req.user.userId });
     if (!mySkills.length) {
       console.log("No skills found for user:", req.user.userId);
       return res.json({ matches: [] });
     }
 
-    const rawMatches = await Skill.aggregate([
+    // Split your own skills into Offer vs Need for clarity
+    const myOffers = mySkills.filter((s) => s.Type?.toLowerCase() === "offer").map((s) => s.SkillName);
+    const myNeeds  = mySkills.filter((s) => s.Type?.toLowerCase() === "need").map((s) => s.SkillName);
+
+    // 2️⃣ Find matches where:
+    // - Others NEED what you OFFER
+    // - Others OFFER what you NEED
+    // - Exclude yourself and the catalog user (-1)
+    const complementaryMatches = await Skill.aggregate([
       {
         $match: {
-          SkillName: { $in: mySkills.map((s) => s.SkillName) },
-          UserID: { $ne: req.user.userId },
+          UserID: { $nin: [Number(req.user.userId), -1] },
+          $or: [
+            { SkillName: { $in: myOffers }, Type: "need" },
+            { SkillName: { $in: myNeeds },  Type: "offer" }
+          ],
         },
       },
       {
         $group: {
           _id: "$UserID",
-          skills: { $addToSet: "$SkillName" },
+          skills: { $addToSet: { SkillName: "$SkillName", Type: "$Type" } },
+          overlapCount: { $sum: 1 }
         },
       },
+      {
+        $match: { overlapCount: { $gte: 1, $lte: 20 } } // avoids spammy mega-users
+      },
+      { $sort: { overlapCount: -1 } } // sort best matches first
     ]);
 
+    // 3️⃣ Attach user names + full skill details
     const matchesWithNames = await Promise.all(
-      rawMatches.map(async (m) => {
+      complementaryMatches.map(async (m) => {
         const user = await User.findOne(
           { UserID: m._id },
           { FirstName: 1, LastName: 1 }
         );
+
+        if (!user) return null;
+
+        // Get that user’s full skill list (Offer + Need)
+        const userSkills = await Skill.find({ UserID: m._id });
+
         return {
           _id: m._id,
-          firstName: user?.FirstName || "Unknown",
-          lastName: user?.LastName || "",
-          skills: m.skills,
+          firstName: user.FirstName,
+          lastName: user.LastName,
+          skills: userSkills.map((s) => ({
+            SkillName: s.SkillName,
+            Type: s.Type.charAt(0).toUpperCase() + s.Type.slice(1),
+          })),
         };
       })
     );
 
-    res.json({ matches: matchesWithNames });
+    const validMatches = matchesWithNames.filter(Boolean);
+    res.json({ matches: validMatches });
+
   } catch (err) {
-    console.error("Error fetching matchskills:", err);
-    res.status(500).json({ message: "Server error fetching matches" });
+    console.error("Error matching skills:", err);
+    res.status(500).json({ error: "Server error while matching skills" });
   }
 });
 
@@ -356,6 +412,25 @@ router.delete('/deleteskill/:skillName', verifyToken, async (req, res) => {
     res.status(200).json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.toString() });
+  }
+});
+
+// DELETE OFFER (same behavior as deleteSkill, but for clarity)
+router.delete("/deleteoffer/:SkillName", verifyToken, async (req, res) => {
+  const userId = req.user.userId;
+  const skillName = decodeURIComponent(req.params.SkillName);
+
+  try {
+    const result = await Skill.deleteOne({ UserID: userId, SkillName: skillName });
+
+    if (result.deletedCount > 0) {
+      res.json({ success: true, message: "Offer deleted successfully." });
+    } else {
+      res.status(404).json({ success: false, message: "Offer not found." });
+    }
+  } catch (err) {
+    console.error("Error deleting offer:", err);
+    res.status(500).json({ success: false, message: "Server error deleting offer." });
   }
 });
 
@@ -552,5 +627,31 @@ router.post('/update-name', verifyToken, async (req, res) => {
   }
 });
 
+// ===== Get User by ID (for profiles, connections, etc.) =====
+router.get('/user/:id', verifyToken, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const user = await User.findOne(
+      { UserID: userId },
+      { UserID: 1, FirstName: 1, LastName: 1, Login: 1 }
+    );
+
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Optionally get their skills
+    const skills = await Skill.find({ UserID: userId }, { SkillName: 1, Type: 1 });
+
+    res.status(200).json({
+      id: user.UserID,
+      firstName: user.FirstName,
+      lastName: user.LastName,
+      email: user.Login,
+      skills,
+    });
+  } catch (err) {
+    console.error('❌ Fetch user by ID error:', err);
+    res.status(500).json({ error: 'Failed to retrieve user info' });
+  }
+});
 
 module.exports = router;
