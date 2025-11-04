@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import DefaultUser from "../assets/user.svg";
+import DefaultUser from "../assets/user.svg?react";
 import LogoMark from "../assets/SkillSwap.svg?react";
 
 // Match your env logic from dashboard.tsx
@@ -148,9 +148,11 @@ export default function ProfilePage() {
 
         {/* User Info */}
         <section className="flex items-center gap-5 mb-8">
-          <div className="w-16 h-16 rounded-full bg-[#3F4F83] grid place-items-center shadow">
-            <img src={DefaultUser} className="w-12 h-12" alt="User avatar" />
+          <div className="relative inline-flex items-center justify-center w-16 h-16 rounded-full bg-[#3F4F83] shadow overflow-hidden">
+          <div className="absolute inset-0 rounded-full ring-2 ring-white/95 pointer-events-none" />
+          <DefaultUser className="w-14 h-14 stroke-white" />
           </div>
+
           <div>
             <h2 className="text-lg font-medium text-gray-900">
               {safeName(firstName, lastName)}

@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useState, useRef, useCallback } from "react"
 // ---------- Assets ----------
 import LogoMark from "../assets/SkillSwap.svg?react";
 import SearchIcon from "../assets/search.svg";
-import DefaultUser from "../assets/user.svg";
+import DefaultUser from "../assets/user.svg?react";
 
 // ---------- API setup ----------
 // Support either VITE_API_URL (used by login) or VITE_API_BASE.
@@ -180,7 +180,7 @@ const Avatar = ({ src }: { src?: string | null }) => (
     {src ? (
       <img className="w-10 h-10 rounded-full object-cover" src={src} alt="" />
     ) : (
-      <img className="w-9 h-9 object-contain" src={DefaultUser} alt="" />
+      <DefaultUser className="w-9 h-9 stroke-white"/>
     )}
   </div>
 );
