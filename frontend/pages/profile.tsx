@@ -145,6 +145,34 @@ export default function ProfilePage() {
             Sign Out
           </button>
         </header>
+        {/* Nav Bar */}
+        <nav className="flex items-center justify-center gap-0 text-sm border-b border-gray-200 pb-4 mb-6">
+          {[
+            { label: "Dashboard", href: "/dashboard" },
+            { label: "Offers", href: "/offers" },
+            { label: "Messages", href: "/messages" },
+            { label: "Profile", href: "/profile" },
+          ].map((item, idx) => {
+            const isActive = item.label === "Profile";
+            const base =
+              "no-underline focus:outline-none focus:ring-2 focus:ring-[#3F4F83] rounded-sm px-2 py-1";
+            const cls = isActive
+              ? `font-semibold !text-[#3F4F83] ${base}`
+              : `font-normal !text-[#313131] ${base}`;
+            return (
+              <div key={item.label} className="flex items-center">
+                <a href={item.href} className={cls} aria-current={isActive ? "page" : undefined}>
+                  {item.label}
+                </a>
+                {idx < 3 && (
+                  <span className="mx-2 text-black opacity-80" aria-hidden="true">
+                    •
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </nav>
 
         {/* User Info */}
         <section className="flex items-center gap-5 mb-8">
