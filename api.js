@@ -470,17 +470,27 @@ router.get('/messages', verifyToken, async (req, res) => {
       $or: [{ from: userId }, { to: userId }]
     }).sort({ createdAt: -1 });
 
-    // get all involved users
+    // get all involved users (include both names)
     const userIds = [...new Set(messages.flatMap(m => [m.from, m.to]))];
-    const users = await User.find({ UserID: { $in: userIds } }, 'UserID FirstName');
-    const nameMap = Object.fromEntries(users.map(u => [u.UserID, u.FirstName]));
+    const users = await User.find(
+      { UserID: { $in: userIds } },
+      'UserID FirstName LastName'
+    );
 
-    // add first names
-    const messagesWithNames = messages.map(m => ({
-      ...m.toObject(),
-      fromName: nameMap[m.from] || `User ${m.from}`,
-      toName: nameMap[m.to] || `User ${m.to}`
-    }));
+    // build name map with both names
+    const nameMap = Object.fromEntries(
+      users.map(u => [
+        u.UserID,
+        `${u.FirstName || ''} ${u.LastName || ''}`.trim()
+      ])
+    );
+
+// attach both names to each message
+const messagesWithNames = messages.map(m => ({
+  ...m.toObject(),
+  fromName: nameMap[m.from] || `User ${m.from}`,
+  toName: nameMap[m.to] || `User ${m.to}`
+}));
 
     res.status(200).json({ messages: messagesWithNames });
   } catch (e) {
