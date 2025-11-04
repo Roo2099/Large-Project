@@ -8,6 +8,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import DefaultUser from "../assets/user.svg?react";
+import LogoMark from "../assets/SkillSwap.svg?react";
 
 const API_BASE =
   (import.meta as any)?.env?.VITE_API_BASE ?? "https://poosd24.live/api";
@@ -62,6 +63,28 @@ type Message = {
   createdAt: string;
 };
 type User = { UserID: number; FirstName: string; LastName: string };
+// ✅ Smarter version – handles capitalization and missing last names
+function formatName(fullName: string) {
+  if (!fullName) return "";
+
+  const parts = fullName
+    .trim()
+    .split(/\s+/)
+    .filter((p) => p.length > 0);
+
+  if (parts.length === 0) return "";
+
+  const first =
+    (parts[0]?.charAt(0).toUpperCase() ?? "") +
+    (parts[0]?.slice(1).toLowerCase() ?? "");
+
+  const lastInitial =
+    parts.length > 1 && parts[1]?.[0]
+      ? parts[1][0].toUpperCase() + "."
+      : "";
+
+  return `${first} ${lastInitial}`.trim();
+}
 
 function timeAgo(iso?: string) {
   if (!iso) return "";
@@ -176,17 +199,26 @@ export default function MessagesPage() {
     setInboxPage(1);
   }, [inboxSearch]);
 
-  async function refreshMessages() {
-    try {
-      const data = await getMessages();
-      data.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
-      setMessages(data);
-    } catch (err: any) {
-      setError(err.message ?? "Failed to load messages");
-    } finally {
-      setLoading(false);
-    }
+ async function refreshMessages() {
+  try {
+    const data = await getMessages();
+    data.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
+
+    // ✅ Apply proper capitalization and last initial formatting
+    const formatted: Message[] = data.map((m) => ({
+      ...m,
+      fromName: formatName(m.fromName ?? ""),
+      toName: formatName(m.toName ?? ""),
+    }));
+
+
+    setMessages(formatted);
+  } catch (err: any) {
+    setError(err.message ?? "Failed to load messages");
+  } finally {
+    setLoading(false);
   }
+}
 
   // inbox rows (latest per partner)
   const inboxRows = useMemo(() => {
@@ -204,7 +236,10 @@ export default function MessagesPage() {
         id: m._id,
         partnerId: pid,
         partnerName:
-          m.from === me ? m.toName ?? `User ${m.to}` : m.fromName ?? `User ${m.from}`,
+        m.from === me
+        ? formatName(m.toName ?? `User ${m.to}`)
+        : formatName(m.fromName ?? `User ${m.from}`),
+
         preview: m.body,
         createdAt: m.createdAt,
       }))
@@ -308,25 +343,47 @@ export default function MessagesPage() {
     <div className="min-h-screen grid place-items-center bg-slate-200">
       <div className="bg-white text-black rounded-2xl shadow-lg w-[min(1100px,92vw)] min-h-[78vh] overflow-hidden flex flex-col">
         {/* NAVBAR */}
-        <header className="grid grid-cols-[1fr_auto_1fr] items-center py-4 px-6 bg-white border-b border-gray-200">
-          <span className="text-2xl font-semibold text-[#3F4F83]">SkillSwap</span>
-          <nav className="flex justify-center gap-3 text-sm">
-            {["Dashboard", "Offers", "Messages", "Profile"].map((label) => {
-              const isActive = label === "Messages";
-              return (
+       <header className="flex justify-between items-center py-4 px-6 bg-white border-b border-gray-200">
+        {/* Left side: Logo + text */}
+        <div className="flex items-center gap-3">
+          <LogoMark className="w-8 h-8 text-[#3F4F83]" />
+          <h1 className="text-2xl font-semibold text-[#3F4F83]">SkillSwap</h1>
+        </div>
+
+        {/* Right side: Navigation */}
+        <nav className="flex items-center gap-0 text-sm">
+          {[
+            { label: "Dashboard", href: "/dashboard" },
+            { label: "Offers", href: "/offers" },
+            { label: "Messages", href: "/messages" },
+            { label: "Profile", href: "/profile" },
+          ].map((item, idx) => {
+            const isActive = item.label === "Messages";
+            const base =
+              "no-underline focus:outline-none focus:ring-2 focus:ring-[#3F4F83] rounded-sm px-2 py-1";
+            const cls = isActive
+              ? `font-semibold !text-[#3F4F83] ${base}`
+              : `font-normal !text-[#313131] ${base}`;
+            return (
+              <div key={item.label} className="flex items-center">
                 <a
-                  key={label}
-                  href={`/${label.toLowerCase()}`}
-                  className={`px-2 py-1 rounded-sm ${
-                    isActive ? "font-semibold text-[#3F4F83]" : "text-[#313131]"
-                  }`}
+                  href={item.href}
+                  className={cls}
+                  aria-current={isActive ? "page" : undefined}
                 >
-                  {label}
+                  {item.label}
                 </a>
-              );
-            })}
-          </nav>
-        </header>
+                {idx < 3 && (
+                  <span className="mx-2 text-black opacity-80" aria-hidden="true">
+                    •
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </nav>
+      </header>
+
 
         <main className="flex-1 bg-[#F7F8FC] px-6 py-6">
           {!isThread ? (
@@ -429,7 +486,8 @@ export default function MessagesPage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-3">
                           <span className="font-medium text-gray-900 truncate">
-                            {r.partnerName}
+                            {formatName(r.partnerName)}
+                            <span className="text-gray-500 text-xs font-normal ml-1">ID: {r.partnerId}</span>
                           </span>
                           <div className="text-xs text-gray-400 shrink-0">
                             {timeAgo(r.createdAt)}
@@ -499,9 +557,12 @@ export default function MessagesPage() {
                 <ArrowLeft size={16} /> Back
               </button>
 
-              <h1 className="text-2xl font-extrabold text-[#1F2A44] mb-3">
-                Conversation with {partnerName}
+              <div className="flex items-center justify-between mb-3">
+              <h1 className="text-3xl sm:text-4xl font-extrabold text-[#1F2A44]">
+                Conversation with <span>{formatName(partnerName)}</span>
               </h1>
+              <span className="text-gray-500 text-base font-normal">ID: {partnerId}</span>
+            </div>
 
               <div className="bg-white rounded-xl border border-gray-200 shadow divide-y divide-gray-100 mb-4">
                 {visibleThread.map((m) => {
