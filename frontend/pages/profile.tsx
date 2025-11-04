@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import DefaultUser from "../assets/user.svg?react";
 import LogoMark from "../assets/SkillSwap.svg?react";
+import { useNavigate } from 'react-router-dom';
+import { Link } from "react-router-dom";
 
 // Match your env logic from dashboard.tsx
 const API_ROOT =
@@ -134,9 +136,14 @@ export default function ProfilePage() {
       <div className="bg-white text-black rounded-2xl shadow-lg w-[min(900px,90vw)] p-6 border border-gray-200">
         {/* Header */}
         <header className="flex items-center justify-between border-b pb-4 mb-6">
-          <div className="flex items-center gap-3">
-            <LogoMark className="w-8 h-8 text-[#3F4F83]" />
-            <h1 className="text-2xl font-semibold text-[#3F4F83]">My Profile</h1>
+          <div className="flex items-center gap-3 justify-self-start">
+                            <Link
+                    to="/dashboard"
+                    className="flex items-center space-x-2 text-[#3F4F83] hover:opacity-90 transition-all duration-200"
+                >
+                    <LogoMark className="w-8 h-8 text-current scale-150" />
+                    <h3 className="text-2xl text-current px-3">SkillSwap</h3>
+                    </Link>
           </div>
           <button
             onClick={handleLogout}

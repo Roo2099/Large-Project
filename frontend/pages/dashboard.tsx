@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
+import { useNavigate } from 'react-router-dom';
+import { Link } from "react-router-dom";
 
 // ---------- Assets ----------
 import LogoMark from "../assets/SkillSwap.svg?react";
@@ -561,8 +563,13 @@ export default function DashboardPage() {
         <header className="grid grid-cols-[1fr_auto_1fr] items-center py-4 px-6 bg-white text-[#313131] border-b border-gray-200">
           {/* Left: logo + title in brand blue */}
           <div className="flex items-center gap-3 justify-self-start">
-            <LogoMark className="w-8 h-8 text-[#3F4F83]" style={{ fill: "none" }} aria-hidden="true" />
-            <span className="text-2xl sm:text-3xl font-semibold text-[#3F4F83]">SkillSwap</span>
+                            <Link
+                    to="/dashboard"
+                    className="flex items-center space-x-2 text-[#3F4F83] hover:opacity-90 transition-all duration-200"
+                >
+                    <LogoMark className="w-8 h-8 text-current scale-150" />
+                    <h3 className="text-2xl text-current px-3">SkillSwap</h3>
+                    </Link>
           </div>
 
           {/* Center: nav items, horizontally centered, with black bullets */}

@@ -1,4 +1,7 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate } from 'react-router-dom';
+import { Link } from "react-router-dom";
+import LogoMark from "../assets/SkillSwap.svg?react";
 
 const API_ROOT =
   (import.meta as any)?.env?.VITE_API_URL
@@ -116,27 +119,46 @@ export default function OffersPage() {
       <div className="bg-white text-black rounded-2xl shadow-lg w-[min(1100px,92vw)] h-auto min-h-[78vh] overflow-hidden flex flex-col">
         {/* ===== Navbar ===== */}
         <header className="flex justify-between items-center py-4 px-6 bg-white border-b border-gray-200">
-          <div className="flex items-center gap-3">
-            <span className="text-2xl font-semibold text-[#3F4F83]">
-              SkillSwap
+  <div className="flex items-center gap-3">
+    {/* Logo + Title */}
+                             <Link
+                     to="/dashboard"
+                     className="flex items-center space-x-2 text-[#3F4F83] hover:opacity-90 transition-all duration-200"
+                 >
+                     <LogoMark className="w-8 h-8 text-current scale-150" />
+                     <h3 className="text-2xl text-current px-3">SkillSwap</h3>
+                     </Link></div>
+
+  {/* Navigation */}
+  <nav className="flex items-center gap-0 text-sm">
+    {[
+      { label: "Dashboard", href: "/dashboard" },
+      { label: "Offers", href: "/offers" },
+      { label: "Messages", href: "/messages" },
+      { label: "Profile", href: "/profile" },
+    ].map((item, idx) => {
+      const isActive = item.label === "Offers";
+      const base =
+        "no-underline focus:outline-none focus:ring-2 focus:ring-[#3F4F83] rounded-sm px-2 py-1";
+      const cls = isActive
+        ? `font-semibold !text-[#3F4F83] ${base}`
+        : `font-normal !text-[#313131] ${base}`;
+      return (
+        <div key={item.label} className="flex items-center">
+          <a href={item.href} className={cls} aria-current={isActive ? "page" : undefined}>
+            {item.label}
+          </a>
+          {idx < 3 && (
+            <span className="mx-2 text-black opacity-80" aria-hidden="true">
+              •
             </span>
-          </div>
-          <nav className="flex items-center gap-2 text-sm text-[#313131]">
-            <a href="/dashboard" className="px-2 hover:text-[#3F4F83]">
-              Dashboard
-            </a>
-            <span>•</span>
-            <span className="font-semibold text-[#3F4F83]">Offers</span>
-            <span>•</span>
-            <a href="/messages" className="px-2 hover:text-[#3F4F83]">
-              Messages
-            </a>
-            <span>•</span>
-            <a href="/profile" className="px-2 hover:text-[#3F4F83]">
-              Profile
-            </a>
-          </nav>
-        </header>
+          )}
+        </div>
+      );
+    })}
+      </nav>
+    </header>
+
 
         {/* ===== Main Content ===== */}
         <main className="flex-1 bg-[#F7F8FC] px-6 py-6">
@@ -219,6 +241,7 @@ export default function OffersPage() {
                   <h3 className="text-sm font-semibold text-gray-900">
                     {match.firstName}{" "}
                     {match.lastName ? match.lastName.charAt(0) + "." : ""}
+                    <span className="text-gray-500 text-xs font-normal ml-1"> ID: {match._id}</span>
                   </h3>
 
                   <div className="flex flex-wrap gap-2 mt-2">
@@ -247,12 +270,14 @@ export default function OffersPage() {
                   >
                     Message
                   </a>
+
                   <a
-                    href="/profile"
+                    href={`/user/${match._id}`}
                     className="border border-[#3F4F83] text-[#3F4F83] font-medium px-4 py-2 rounded-md hover:bg-[#3F4F83] hover:text-white transition"
                   >
                     View Profile
                   </a>
+
                   <button
                     onClick={() =>
                       setMatches((prev) =>
@@ -263,6 +288,9 @@ export default function OffersPage() {
                   >
                     🗑 Delete
                   </button>
+
+
+
                 </div>
               </li>
             ))}
