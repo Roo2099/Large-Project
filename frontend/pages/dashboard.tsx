@@ -1,10 +1,9 @@
-import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useState, useRef, useCallback, useLayoutEffect } from "react";
 import { Link } from "react-router-dom";
 
 // ---------- Assets ----------
 import LogoMark from "../assets/SkillSwap.svg?react";
-import SearchIcon from "../assets/search.svg";
+import SearchIcon from "../assets/search.svg?react";
 import DefaultUser from "../assets/user.svg?react";
 
 // ---------- API setup ----------
@@ -85,6 +84,13 @@ type PersonRowData = {
   wantMain?: string | null;
 };
 
+type SearchUser = {
+  id: number;
+  firstName?: string | null;
+  lastName?: string | null;
+  email?: string | null; // server may omit; we'll gracefully fall back
+};
+
 // ---------- Helpers ----------
 function safeName(first?: string | null, last?: string | null) {
   const f = first ?? "";
@@ -99,28 +105,18 @@ function timeMs(iso?: string) {
 const EM_DASH = "—";
 
 // ---------- API calls ----------
+async function sendFriendRequest(toUserId: number): Promise<void> {
+  const token = getToken();
+  if (!token) throw new ApiError("Unauthorized", 401);
+  await apiFetch<void>(`/friend-request/${toUserId}`, { method: "POST", token });
+}
+
 async function getMySkills(): Promise<Skill[]> {
   const token = getToken();
   if (!token) return [];
   const raw = await apiFetch<{ mySkills: Skill[] }>("/myskills", { token });
   return raw.mySkills ?? [];
 }
-
-async function deleteSkill(skillName: string): Promise<boolean> {
-  const token = getToken();
-  if (!token) return false;
-
-  const res = await fetch(`${API_ROOT}/deleteskill/${encodeURIComponent(skillName)}`, {
-    method: "DELETE",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-
-  const data = await res.json();
-  return res.ok && data.success;
-}
-
 
 async function getMessages(): Promise<Message[]> {
   const token = getToken();
@@ -159,6 +155,71 @@ async function getMatchSkills(): Promise<Match[]> {
   return raw.matches ?? [];
 }
 
+// === REPLACEMENT: coerce toUserId to number to avoid mismatches ===
+async function getOutgoingFriendRequests(): Promise<number[]> {
+  const token = getToken();
+  if (!token) return [];
+  const raw = await apiFetch<{ requests: Array<{ toUserId: number | string; status?: string }> }>(
+    "/friend-requests/outgoing",
+    { token }
+  );
+  return (raw.requests ?? [])
+    .map((r) => Number((r as any).toUserId))
+    .filter((n) => Number.isFinite(n));
+}
+
+// INSERT AFTER: getOutgoingFriendRequests()
+
+// Accept/Decline an incoming friend request by id
+async function respondToOffer(
+  requestId: string,
+  action: "accept" | "decline"
+): Promise<void> {
+  const token = getToken();
+  if (!token) throw new ApiError("Unauthorized", 401);
+  await apiFetch(`/friend-request/${requestId}/respond`, {
+    method: "POST",
+    token,
+    body: { action },
+  });
+}
+
+// Fetch pending incoming friend requests → Map<fromUserId, requestId>
+async function getIncomingFriendRequests(): Promise<Map<number, string>> {
+  const token = getToken();
+  if (!token) return new Map();
+
+  const raw = await apiFetch<{
+    requests: Array<{ _id: string; fromUserId: number | string; status?: string }>;
+  }>("/friend-requests", { token });
+
+  const m = new Map<number, string>();
+  for (const r of raw.requests ?? []) {
+    const from = Number((r as any).fromUserId);
+    if (Number.isFinite(from)) m.set(from, (r as any)._id);
+  }
+  return m;
+}
+
+async function searchUsersAPI(query: string): Promise<SearchUser[]> {
+  const token = getToken(); // not required by current API, but harmless if sent
+  const q = query.trim();
+  if (!q) return [];
+
+  const url = `/users?name=${encodeURIComponent(q)}`;
+  const raw = await apiFetch<{ users: Array<{ UserID: number; FirstName?: string; LastName?: string; Login?: string }> }>(
+    url,
+    token ? { token } : {}
+  );
+
+  return (raw.users ?? []).map(u => ({
+    id: Number(u.UserID),
+    firstName: u.FirstName ?? null,
+    lastName:  u.LastName  ?? null,
+    email: (u as any).Login ?? null, // present if API was extended; else null
+  }));
+}
+
 // ---------- Small UI bits ----------
 const Chip = ({ children }: { children: React.ReactNode }) => (
   <span className="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-[12px] leading-[1.15] text-gray-800 max-w-[12rem] truncate align-middle">
@@ -186,6 +247,53 @@ const Avatar = ({ src }: { src?: string | null }) => (
     )}
   </div>
 );
+
+// ---------- Toasts (minimal, accessible) ----------
+type ToastKind = "success" | "error" | "info";
+type ToastMsg = { id: number; kind: ToastKind; message: string };
+
+function ToastHost({
+  toasts,
+  onDismiss,
+}: {
+  toasts: ToastMsg[];
+  onDismiss: (id: number) => void;
+}) {
+  return (
+    <div
+      className="fixed bottom-4 right-4 z-[999] space-y-2"
+      role="status"
+      aria-live="polite"
+    >
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={[
+          "min-w-[220px] max-w-[360px] rounded-xl px-4 py-3 text-white shadow-xl border-l-4",
+          t.kind === "success" ? "bg-green-500/95 border-green-700" :
+          t.kind === "error"   ? "bg-red-500/95 border-red-700"   :
+                                "bg-[#3F4F83]/95 border-[#2f3a63]"
+        ].join(" ")}
+          role="alert"
+        >
+          <div className="flex items-start gap-3">
+            <span className="text-sm leading-5">{t.message}</span>
+			<button
+			  type="button"
+			  aria-label="Close"
+			  onClick={() => onDismiss(t.id)}
+			  className="ml-auto inline-flex items-center justify-center text-white/85 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70 rounded-sm !bg-transparent !border-0 !shadow-none !outline-none p-0 leading-none"
+			  // Inline style to nuke any global button styling that might slip through
+			  style={{ background: 'transparent', border: 0, boxShadow: 'none', lineHeight: 1 }}
+			>
+			  ×
+			</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ---------- One-line, no-wrap chips row with +N overflow (zoom/resize robust) ----------
 type InlineChipsRowProps = {
@@ -324,33 +432,425 @@ function InlineChipsRow({ label, items, rightInsetPx = 16, className = "" }: Inl
 // Shared row for both sections (Recent / Suggested)
 function PersonRow({ data }: { data: PersonRowData }) {
   const { name, avatarUrl, offerMain, wantMain } = data;
-  return (
+
+ const chipsRef = useRef<HTMLDivElement | null>(null);
+const [canScrollLeft, setCanScrollLeft] = useState(false);
+const [canScrollRight, setCanScrollRight] = useState(false);
+
+const onChevronLeft = () => {
+  chipsRef.current?.scrollBy({ left: -160, behavior: "smooth" });
+};
+
+const onChevronRight = () => {
+  chipsRef.current?.scrollBy({ left: 160, behavior: "smooth" });
+};
+useEffect(() => {
+  const el = chipsRef.current;
+  if (!el) return;
+
+  const checkScroll = () => {
+    const hasOverflow = el.scrollWidth > el.clientWidth + 2;
+    const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+
+    setCanScrollLeft(el.scrollLeft > 2);
+    setCanScrollRight(hasOverflow && el.scrollLeft < maxScroll - 2);
+  };
+
+  // run once + on resize + on scroll
+  checkScroll();
+  el.addEventListener("scroll", checkScroll);
+  window.addEventListener("resize", checkScroll);
+
+  const resizeObserver = new ResizeObserver(checkScroll);
+  resizeObserver.observe(el);
+
+  return () => {
+    el.removeEventListener("scroll", checkScroll);
+    window.removeEventListener("resize", checkScroll);
+    resizeObserver.disconnect();
+  };
+}, []);
+
+return (
     <div
       role="listitem"
       className="flex items-center gap-3 bg-white rounded-lg border border-gray-200 p-3 shadow-sm"
     >
       <Avatar src={avatarUrl ?? null} />
-      <div className="min-w-0">
+
+      <div className="min-w-0 w-full">
         <div className="text-sm font-medium text-gray-900 truncate">{name}</div>
-        <div className="text-xs text-gray-700 mt-0.5 flex items-center gap-2 flex-wrap">
-          <span className="text-gray-600">Offers:</span>
-          {offerMain ? <Chip>{offerMain}</Chip> : <span className="text-gray-500">{EM_DASH}</span>}
-          <span className="text-gray-400 mx-1" aria-hidden="true">
-            |
-          </span>
-          <span className="text-gray-600">Wants:</span>
-          {wantMain ? <Chip>{wantMain}</Chip> : <span className="text-gray-500">{EM_DASH}</span>}
+
+        {/* Scrollable chips with left/right chevrons */}
+        <div className="relative mt-0.5 overflow-visible max-w-[200px] ml-auto">
+          <div
+            ref={chipsRef}
+            className="overflow-x-auto no-scrollbar"
+            style={{
+              scrollBehavior: "smooth",
+              paddingRight: "1.5rem",
+            }}
+          >
+            <div className="flex items-center gap-2 text-xs text-gray-700 whitespace-nowrap w-max">
+              <span className="text-gray-600">Offers:</span>
+              {offerMain ? (
+                <span className="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-[12px] text-gray-800">
+                  {offerMain}
+                </span>
+              ) : (
+                <span className="text-gray-500">—</span>
+              )}
+              <span className="text-gray-400 mx-1" aria-hidden="true">|</span>
+              <span className="text-gray-600">Wants:</span>
+              {wantMain ? (
+                <span className="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-[12px] text-gray-800">
+                  {wantMain}
+                </span>
+              ) : (
+                <span className="text-gray-500">—</span>
+              )}
+            </div>
+          </div>
+
+          {/* Left chevron */}
+          {canScrollLeft && (
+            <button
+              type="button"
+              onClick={onChevronLeft}
+              aria-label="Scroll left"
+              className="absolute left-[-0.75rem] top-1/2 -translate-y-1/2 z-40
+                        flex items-center justify-center w-6 h-6 rounded-full
+                        !bg-white border border-gray-300 shadow-sm text-gray-600
+                        hover:text-[#3F4F83] hover:border-[#3F4F83]
+                        transition-all duration-150"
+            >
+              ‹
+            </button>
+          )}
+
+          {/* Right chevron */}
+          {canScrollRight && (
+            <button
+              type="button"
+              onClick={onChevronRight}
+              aria-label="Scroll right"
+              className="absolute top-1/2 -translate-y-1/2 z-40
+                        flex items-center justify-center w-6 h-6 rounded-full
+                        !bg-white border border-gray-300 shadow-sm text-gray-600
+                        hover:text-[#3F4F83] hover:border-[#3F4F83]
+                        transition-all duration-150"
+              style={{
+                right: '-1.25rem',
+              }}
+            >
+              ›
+            </button>
+          )}
         </div>
       </div>
     </div>
+  );
+
+}
+
+// ——— anchor: SuggestedPersonButton props ———
+function SuggestedPersonButton({
+  data,
+  onSendRequest,
+  onAcceptRequest,
+  isBusy,
+  isSent,
+  isIncoming,
+  incomingRequestId,
+}: {
+  data: PersonRowData;
+  onSendRequest: (userId: number) => void;
+  onAcceptRequest: (requestId: string, userId: number) => void;
+  isBusy: boolean;
+  isSent: boolean;
+  isIncoming: boolean;
+  incomingRequestId?: string | undefined;
+}) {
+
+  const { name, avatarUrl, offerMain, wantMain, userId } = data;
+
+  const chipsRef = useRef<HTMLDivElement | null>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+const [canScrollRight, setCanScrollRight] = useState(false);
+
+const onChevronRight = () => {
+  const el = chipsRef.current;
+  if (el) el.scrollBy({ left: 120, behavior: "smooth" });
+};
+const onChevronLeft = () => {
+  const el = chipsRef.current;
+  if (el) el.scrollBy({ left: -120, behavior: "smooth" });
+};
+
+// detect overflow and chevron visibility
+useEffect(() => {
+  const el = chipsRef.current;
+  if (!el) return;
+
+  const checkScroll = () => {
+    // Detect total overflow width
+    const hasOverflow = el.scrollWidth > el.clientWidth + 2;
+    const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+
+    // Update scroll states
+    setCanScrollLeft(el.scrollLeft > 2);
+    setCanScrollRight(hasOverflow && el.scrollLeft < maxScroll - 2);
+  };
+
+  // Initial check after render and again after a small delay
+  const initial = requestAnimationFrame(checkScroll);
+  const delayed = setTimeout(checkScroll, 250); // catches late text/font rendering
+
+  // Listen for changes
+  el.addEventListener("scroll", checkScroll);
+  window.addEventListener("resize", checkScroll);
+
+  const resizeObserver = new ResizeObserver(checkScroll);
+  resizeObserver.observe(el);
+
+  return () => {
+    cancelAnimationFrame(initial);
+    clearTimeout(delayed);
+    el.removeEventListener("scroll", checkScroll);
+    window.removeEventListener("resize", checkScroll);
+    resizeObserver.disconnect();
+  };
+}, [chipsRef]);
+
+  // Decide action for the invisible pill
+  const onOverlayClick = () => {
+    if (isBusy) return;
+    if (isIncoming && incomingRequestId) {
+      onAcceptRequest(incomingRequestId, userId);
+    } else if (!isSent) {
+      onSendRequest(userId);
+    }
+  };
+
+  const cardStateClasses = isBusy || isSent ? "opacity-60" : "";
+  const overlayCursor =
+    isBusy || (isSent && !isIncoming) ? "cursor-not-allowed" : "cursor-pointer";
+
+  // --- Overlay sizing from visible pill ---
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const overlayRef = useRef<HTMLButtonElement | null>(null);
+
+  const measureAndFitOverlay = useCallback(() => {
+    const overlay = overlayRef.current;
+    const card = cardRef.current;
+    if (!overlay || !card) return;
+
+    const pill = overlay.previousElementSibling as HTMLElement | null;
+    if (!pill) return;
+
+    const pillRect = pill.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+
+    const inset = 1;
+    const left = pillRect.left - cardRect.left + inset;
+    const top = pillRect.top - cardRect.top + inset;
+    const width = Math.max(0, pillRect.width - inset * 2);
+    const height = Math.max(0, pillRect.height - inset * 2);
+
+    const s = overlay.style;
+    s.left = `${left}px`;
+    s.top = `${top}px`;
+    s.width = `${width}px`;
+    s.height = `${height}px`;
+    s.padding = "0";
+    s.transform = "none";
+  }, []);
+
+  useLayoutEffect(() => {
+    measureAndFitOverlay();
+    const id = requestAnimationFrame(() => measureAndFitOverlay());
+    return () => cancelAnimationFrame(id);
+    // include isIncoming so label swap re-measures
+  }, [measureAndFitOverlay, isBusy, isSent, isIncoming, name]);
+
+  useEffect(() => {
+    const onResize = () => measureAndFitOverlay();
+    window.addEventListener("resize", onResize);
+
+    const vv = window.visualViewport;
+    vv?.addEventListener("resize", onResize);
+
+    let last = window.devicePixelRatio;
+    const dprTimer = window.setInterval(() => {
+      if (window.devicePixelRatio !== last) {
+        last = window.devicePixelRatio;
+        measureAndFitOverlay();
+      }
+    }, 300);
+
+    return () => {
+      window.removeEventListener("resize", onResize);
+      vv?.removeEventListener("resize", onResize);
+      clearInterval(dprTimer);
+    };
+  }, [measureAndFitOverlay]);
+
+  const onCardHoverOrFocus = useCallback(() => {
+    requestAnimationFrame(() => measureAndFitOverlay());
+  }, [measureAndFitOverlay]);
+
+  // Derive label
+  const label = isBusy
+    ? isIncoming
+      ? "Accepting…"
+      : "Sending…"
+    : isIncoming
+      ? "Accept Request"
+      : isSent
+        ? "Requested"
+        : "Send Request";
+
+  const ariaLabel = isIncoming
+    ? `Accept request from ${name}`
+    : isSent
+      ? `Request already sent to ${name}`
+      : `Send Request: ${name}`;
+
+return (
+  <div role="listitem">
+    <div
+      ref={cardRef}
+      className={`group relative w-full text-left
+                  flex items-center gap-3
+                  bg-white hover:!bg-white active:!bg-white
+                  rounded-lg border border-gray-200 p-3 shadow-sm
+                  hover:shadow-md ${cardStateClasses}
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3F4F83]
+                  transition`}
+      aria-disabled={isBusy || (isSent && !isIncoming)}
+      onMouseEnter={onCardHoverOrFocus}
+      onFocus={onCardHoverOrFocus}
+    >
+      <Avatar src={avatarUrl ?? null} />
+
+      <div className="min-w-0">
+  {/* Name above chips */}
+  <div className="text-sm font-medium text-gray-900 truncate mb-1">{name}</div>
+
+  {/* Chip container */}
+  <div className="relative mt-0.5 overflow-visible max-w-[200px] ml-auto">
+
+  {/* Scrollable area */}
+  <div
+    ref={chipsRef}
+    className="overflow-x-auto no-scrollbar"
+    style={{
+      scrollBehavior: "smooth",
+      paddingRight: "1.5rem", // keeps last chip from clipping
+    }}
+  >
+    <div className="flex items-center gap-2 text-xs text-gray-700 whitespace-nowrap w-max">
+      <span className="text-gray-600">Offers:</span>
+      {offerMain ? (
+        <span className="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-[12px] text-gray-800">
+          {offerMain}
+        </span>
+      ) : (
+        <span className="text-gray-500">—</span>
+      )}
+      <span className="text-gray-400 mx-1" aria-hidden="true">|</span>
+      <span className="text-gray-600">Wants:</span>
+      {wantMain ? (
+        <span className="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-[12px] text-gray-800">
+          {wantMain}
+        </span>
+      ) : (
+        <span className="text-gray-500">—</span>
+      )}
+    </div>
+  </div>
+
+  {/* Left chevron */}
+  {canScrollLeft && (
+    <button
+      type="button"
+      onClick={onChevronLeft}
+      aria-label="Scroll left"
+      className="absolute left-[-0.75rem] top-1/2 -translate-y-1/2 z-40
+                 flex items-center justify-center w-6 h-6 rounded-full
+                 !bg-white border border-gray-300 shadow-sm text-gray-600
+                 hover:text-[#3F4F83] hover:border-[#3F4F83]
+                 transition-all duration-150"
+    >
+      ‹
+    </button>
+  )}
+
+  {/* Right chevron */}
+  {canScrollRight && (
+    <button
+      type="button"
+      onClick={onChevronRight}
+      aria-label="Scroll right"
+      className="absolute top-1/2 -translate-y-1/2 z-40
+                 flex items-center justify-center w-6 h-6 rounded-full
+                 !bg-white border border-gray-300 shadow-sm text-gray-600
+                 hover:text-[#3F4F83] hover:border-[#3F4F83]
+                 transition-all duration-150"
+      style={{
+        right: '-3.6rem', // edge of the card
+      }}
+    >
+      ›
+    </button>
+  )}
+</div>
+        {/* Visible pill (not clickable) */}
+        <span
+          aria-hidden="true"
+          className={[
+            "pointer-events-none absolute top-2 right-3 rounded-full px-2 py-1 text-xs font-medium shadow",
+            isSent && !isIncoming
+              ? "bg-gray-300 text-gray-800"
+              : "bg-[#3F4F83] text-white",
+            isBusy
+              ? "opacity-100"
+              : "opacity-0 -translate-y-0.5 group-hover:opacity-100 group-hover:translate-y-0 group-focus-visible:opacity-100 group-focus-visible:translate-y-0",
+            "transition",
+          ].join(" ")}
+          style={{ transform: "scale(0.9)", transformOrigin: "top right" }}
+        >
+          {label}
+        </span>
+
+        {/* Invisible overlay over the pill (actual click target) */}
+        <button
+          ref={overlayRef}
+          type="button"
+          onClick={onOverlayClick}
+          disabled={isBusy || (isSent && !isIncoming)}
+          aria-label={ariaLabel}
+          className={`absolute z-10 rounded-full
+                      focus:outline-none !bg-transparent !border-0 !shadow-none text-transparent select-none overflow-hidden
+                      ${overlayCursor}`}
+          style={{
+            position: "absolute",
+            background: "transparent",
+            border: 0,
+            boxShadow: "none",
+            lineHeight: 1,
+          }}
+        >
+          .
+        </button>
+      </div> {/* closes inner content wrapper */}
+    </div>   {/* closes outer card container */}
+  </div>   
   );
 }
 
 // ---------- Dashboard ----------
 export default function DashboardPage() {
-  const [feedback, setFeedback] = useState<string | null>(null);
-  const [feedbackType, setFeedbackType] = useState<"success" | "error" | null>(null);
-  const [showSkillsModal, setShowSkillsModal] = useState(false);
   // Redirect if not logged in
   useEffect(() => {
     if (!getToken()) {
@@ -483,13 +983,15 @@ export default function DashboardPage() {
             recentPartnerIds.map(async (id) => {
               const profile = await getUserProfile(id);
               if (!profile) return null;
-              return {
-                userId: id,
-                name: `${profile.firstName} ${profile.lastName[0]}.`,
-                avatarUrl: null,
-                offerMain: profile.skills.find((s: any) => s.Type === "offer")?.SkillName || null,
-                wantMain: profile.skills.find((s: any) => s.Type === "need")?.SkillName || null,
-              };
+				// ANCHOR: recent-people-name-guard (REPLACE the object you return per partner)
+				// --- REPLACEMENT inside recentPartnerIds.map(...) callback ---
+				return {
+				  userId: id,
+				  name: safeName(profile.firstName, profile.lastName),
+				  avatarUrl: null,
+				  offerMain: profile.skills.find((s: any) => s.Type?.toLowerCase() === "offer")?.SkillName || null,
+				  wantMain:  profile.skills.find((s: any) => s.Type?.toLowerCase() === "need")?.SkillName  || null,
+				};
             })
           );
           setRecentPeople(people.filter(Boolean) as PersonRowData[]);
@@ -499,30 +1001,343 @@ export default function DashboardPage() {
   // Map Suggested Connections to PersonRowData
   // /matchskills returns { _id, skills: string[] } (no typed offer/need), so use a simple fallback:
   // offers = first skill, wants = second skill (if present).
-  const [suggestedPeople, setSuggestedPeople] = useState<PersonRowData[]>([]);
-  useEffect(() => {
-    if (!matches || matches.length === 0) return;
+	// ANCHOR: suggested-people-map-harden (REPLACE the whole useEffect)
+// ANCHOR: suggested-people-map-harden (REPLACE the whole useEffect)
+const [suggestedPeople, setSuggestedPeople] = useState<PersonRowData[]>([]);
 
-    (async () => {
-      const people = await Promise.all(
-        matches.map(async (m) => {
-          const profile = await getUserProfile(m._id);
-          if (!profile) return null;
-          return {
-            userId: m._id,
-            name: `${profile.firstName} ${profile.lastName[0]}.`,
-            avatarUrl: null,
-            offerMain: profile.skills.find((s: any) => s.Type === "offer")?.SkillName || null,
-            wantMain: profile.skills.find((s: any) => s.Type === "need")?.SkillName || null,
-          };
-        })
-      );
-      setSuggestedPeople(people.filter(Boolean) as PersonRowData[]);
-    })();
-  }, [matches]);
+	// === REPLACEMENT: suggested people mapping with safeName & Type casing ===
+	useEffect(() => {
+	  if (!matches || matches.length === 0) {
+		setSuggestedPeople([]);
+		return;
+	  }
 
+	  (async () => {
+		try {
+		  const results = await Promise.all(
+			matches.map(async (m) => {
+			  const id = Number((m as any)._id);
+			  if (!Number.isFinite(id)) return null;
 
-  // ----- Navbar dropdown state (click-to-toggle, click-outside/esc to close) -----
+			  const profile = await getUserProfile(id);
+			  if (!profile) return null;
+
+			  return {
+				userId: id,
+				name: safeName(profile.firstName, profile.lastName),
+				avatarUrl: null,
+				offerMain: profile.skills.find((s: any) => s.Type?.toLowerCase() === "offer")?.SkillName || null,
+				wantMain:  profile.skills.find((s: any) => s.Type?.toLowerCase() === "need")?.SkillName  || null,
+			  } as PersonRowData;
+			})
+		  );
+
+		  setSuggestedPeople(results.filter(Boolean) as PersonRowData[]);
+		} catch (err) {
+		  console.error("Failed to build suggested people:", err);
+		  setSuggestedPeople([]);
+		}
+	  })();
+	}, [matches]);
+
+// ----- Friend requests + toasts (state and handlers) -----
+const [requestInFlight, setRequestInFlight] = useState<Set<number>>(new Set());
+const [requestSent, setRequestSent] = useState<Set<number>>(new Set());
+// INSERT AFTER: const [requestSent, setRequestSent] = useState<Set<number>>(new Set());
+const [incomingMap, setIncomingMap] = useState<Map<number, string>>(new Map());
+
+// [INSERT AFTER] const [incomingMap, setIncomingMap] = useState<Map<number, string>>(new Map());
+
+// Build a set of ALL chat partners (exclude these from search results)
+const partnerSet = useMemo(() => {
+  const s = new Set<number>();
+  if (messages && messages.length > 0) {
+    let meId = currentUser.id ?? null;
+    if (meId == null) {
+      // infer my id by frequency, same fallback as earlier
+      const counts = new Map<number, number>();
+      for (const m of messages) {
+        counts.set(m.from, (counts.get(m.from) ?? 0) + 1);
+        counts.set(m.to,   (counts.get(m.to)   ?? 0) + 1);
+      }
+      let best: number | null = null, bestCnt = -1;
+      for (const [id, cnt] of counts) if (cnt > bestCnt) { best = id; bestCnt = cnt; }
+      meId = best;
+    }
+    if (meId != null) {
+      for (const m of messages) s.add(m.from === meId ? m.to : m.from);
+      s.delete(meId); // safety
+    }
+  }
+  return s;
+}, [messages, currentUser.id]);
+
+// --- Search UI state ---
+const [searchQuery, setSearchQuery] = useState("");
+const [searchOpen, setSearchOpen] = useState(false); // dropdown visibility
+const [searchResults, setSearchResults] = useState<SearchUser[]>([]);
+const searchWrapRef = useRef<HTMLDivElement | null>(null);
+const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+// rank results by simple heuristic so "closest" appears first
+const rankedResults = useMemo(() => {
+  const q = searchQuery.trim().toLowerCase();
+  if (!q) return [];
+
+  // Exclude myself and anyone I already have messages with
+  const meId = currentUser.id ?? -999999;
+  const filtered = searchResults.filter(u => u.id !== meId && !partnerSet.has(u.id));
+
+  const score = (u: SearchUser) => {
+    const first = (u.firstName ?? "").toLowerCase();
+    const last  = (u.lastName  ?? "").toLowerCase();
+    const mail  = (u.email     ?? "").toLowerCase();
+    const full  = (first + " " + last).trim();
+
+    if (full === q || mail === q) return 0;
+    if (first.startsWith(q) || last.startsWith(q) || mail.startsWith(q)) return 10;
+    if (full.startsWith(q)) return 12;
+    if (first.includes(q) || last.includes(q) || mail.includes(q) || full.includes(q)) return 20;
+    return 50;
+  };
+
+  return [...filtered].sort((a, b) => score(a) - score(b)).slice(0, 10);
+}, [searchQuery, searchResults, partnerSet, currentUser.id]);
+
+// Debounced fetch when typing (only if the input is non-empty and dropdown is open)
+useEffect(() => {
+  const q = searchQuery.trim();
+  if (!q || !searchOpen) {
+    setSearchResults([]);
+    return;
+  }
+  let cancelled = false;
+  const t = window.setTimeout(async () => {
+    try {
+      const res = await searchUsersAPI(q);
+      if (!cancelled) setSearchResults(res);
+    } catch (e) {
+      if (!cancelled) setSearchResults([]);
+    }
+  }, 200);
+  return () => { cancelled = true; clearTimeout(t); };
+}, [searchQuery, searchOpen]);
+
+// Close dropdown when clicking outside the search area
+useEffect(() => {
+  const onDocDown = (e: MouseEvent | PointerEvent) => {
+    const t = e.target as Node | null;
+    const host = searchWrapRef.current;
+    if (!host || !t) return;
+    if (!host.contains(t)) setSearchOpen(false);
+  };
+  document.addEventListener("pointerdown", onDocDown);
+  return () => document.removeEventListener("pointerdown", onDocDown);
+}, []);
+
+const toastIdRef = useRef(0);
+const [toasts, setToasts] = useState<ToastMsg[]>([]);
+const dismissToast = useCallback((id: number) => {
+  setToasts((t) => t.filter((x) => x.id !== id));
+}, []);
+const showToast = useCallback((kind: ToastKind, message: string) => {
+  const id = ++toastIdRef.current;
+  setToasts((t) => [...t, { id, kind, message }]);
+  window.setTimeout(() => dismissToast(id), 3600);
+}, [dismissToast]);
+
+// Seed "Requested" from server-side outgoing requests (fetch full set, merge into state)
+useEffect(() => {
+  const token = getToken();
+  if (!token) return;
+
+  let cancelled = false;
+  (async () => {
+    try {
+      const outgoing = await getOutgoingFriendRequests(); // array of toUserId
+      if (cancelled) return;
+
+      setRequestSent((prev) => {
+        const merged = new Set(prev);
+        for (const id of outgoing) merged.add(id);
+        return merged;
+      });
+    } catch {
+      // Silent fail: UI still renders; items remain unrequested until user interacts or next load.
+    }
+  })();
+
+  return () => { cancelled = true; };
+  // Runs on mount. If you support account switching in-session, add currentUser.id to deps.
+}, []);
+
+// INSERT AFTER: the useEffect that seeds requestSent from /friend-requests/outgoing
+useEffect(() => {
+  const token = getToken();
+  if (!token) return;
+
+  let cancelled = false;
+  (async () => {
+    try {
+      const map = await getIncomingFriendRequests(); // Map<fromUserId, requestId>
+      if (cancelled) return;
+      setIncomingMap(map);
+    } catch {
+      // silently ignore; dashboard still works
+    }
+  })();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
+
+// Send request: optimistic mark + informative toasts
+const onSendRequest = useCallback(async (userId: number) => {
+  if (requestInFlight.has(userId) || requestSent.has(userId)) return;
+
+  setRequestInFlight((prev) => {
+    const n = new Set(prev);
+    n.add(userId);
+    return n;
+  });
+
+  try {
+    await sendFriendRequest(userId);
+
+    setRequestSent((prev) => {
+      const n = new Set(prev);
+      n.add(userId); // immediate gray + "Requested" and will re-order to bottom
+      return n;
+    });
+
+    showToast("success", "Request sent");
+  } catch (e: any) {
+    if (e instanceof ApiError) {
+      if (e.status === 400) {
+        const raw = (e.body as any)?.error || e.message || "";
+        const already = /exist|already/i.test(raw);
+
+        if (already) {
+          // Reflect server truth locally so card re-orders to bottom
+          setRequestSent((prev) => {
+            const n = new Set(prev);
+            n.add(userId);
+            return n;
+          });
+
+          // Optional hardening: refetch authoritative outgoing list and merge
+          try {
+            const fresh = await getOutgoingFriendRequests(); // array<number>
+            setRequestSent((prev) => {
+              const merged = new Set(prev);
+              for (const id of fresh) merged.add(id);
+              return merged;
+            });
+          } catch {
+            // ignore; UI remains usable
+          }
+        }
+
+        const friendly = already ? "Already requested or already friends" : (raw || "Bad request");
+        showToast("info", friendly);
+      } else if (e.status === 401 || e.status === 403) {
+        showToast("error", "Please sign in again to send requests");
+      } else {
+        showToast("error", "Could not send request. Try again later.");
+      }
+    } else {
+      showToast("error", "Could not send request. Try again later.");
+    }
+  } finally {
+    setRequestInFlight((prev) => {
+      const n = new Set(prev);
+      n.delete(userId);
+      return n;
+    });
+  }
+}, [requestInFlight, requestSent, showToast]);
+
+// INSERT AFTER: onSendRequest handler
+const onAcceptIncoming = useCallback(
+  async (requestId: string, userId: number) => {
+    if (requestInFlight.has(userId)) return;
+
+    setRequestInFlight((prev) => {
+      const n = new Set(prev);
+      n.add(userId);
+      return n;
+    });
+
+    try {
+      await respondToOffer(requestId, "accept");
+      // Remove from incoming map; server also deletes the pending request
+      setIncomingMap((prev) => {
+        const n = new Map(prev);
+        n.delete(userId);
+        return n;
+      });
+      showToast("success", "Request accepted");
+      // Open Messages like the Offers page behavior
+      window.location.assign("/messages");
+    } catch (e: any) {
+      showToast("error", e?.message ?? "Failed to accept request");
+    } finally {
+      setRequestInFlight((prev) => {
+        const n = new Set(prev);
+        n.delete(userId);
+        return n;
+      });
+    }
+  },
+  [requestInFlight, showToast]
+);
+
+// ----- Suggested vs. Recent alignment helpers (order + cap + conditional justify) -----
+const recentsListRef = useRef<HTMLDivElement | null>(null);
+const [justifySuggested, setJustifySuggested] = useState(false);
+const [suggestedMinHeight, setSuggestedMinHeight] = useState<number | undefined>(undefined);
+
+// Stable-partition: unrequested first, requested later (preserve original order within groups)
+const suggestedOrdered = useMemo(() => {
+  if (!suggestedPeople || suggestedPeople.length === 0) return [] as PersonRowData[];
+  const unrequested: PersonRowData[] = [];
+  const requested: PersonRowData[] = [];
+  for (const p of suggestedPeople) {
+    (requestSent.has(p.userId) ? requested : unrequested).push(p);
+  }
+  return unrequested.concat(requested);
+}, [suggestedPeople, requestSent]);
+
+// Cap AFTER ordering (2 cols × 3 rows = 6)
+const suggestedCapped = useMemo(() => suggestedOrdered.slice(0, 6), [suggestedOrdered]);
+
+useEffect(() => {
+  const mql = window.matchMedia("(min-width: 1024px)"); // Tailwind 'lg'
+  const compute = () => {
+    const isDesktop = mql.matches;
+    const recentRows = recentPeople.length;                      // one per row, max 2
+    const suggestedRows = Math.ceil(suggestedCapped.length / 2); // 2 cols at ≥sm
+    const shouldJustify = isDesktop && recentRows === 2 && suggestedRows === 3;
+
+    setJustifySuggested(shouldJustify);
+
+    if (shouldJustify && recentsListRef.current) {
+      setSuggestedMinHeight(recentsListRef.current.offsetHeight);
+    } else {
+      setSuggestedMinHeight(undefined);
+    }
+  };
+
+  compute();
+  mql.addEventListener("change", compute);
+  window.addEventListener("resize", compute);
+  return () => {
+    mql.removeEventListener("change", compute);
+    window.removeEventListener("resize", compute);
+  };
+}, [recentPeople.length, suggestedCapped.length]);
+
   const [menuOpen, setMenuOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -558,16 +1373,16 @@ export default function DashboardPage() {
   return (
     <div className="min-h-screen grid place-items-center bg-slate-200">
       {/* App Shell (one window) */}
-      <div className="bg-white text-black rounded-2xl shadow-lg w-[min(1100px,92vw)] h-auto min-h-[78vh] overflow-hidden flex flex-col">
+      <div className="bg-white text-black rounded-2xl shadow-lg w-[min(1100px,92vw)] overflow-hidden flex flex-col">
         {/* Navbar */}
-        <header className="grid grid-cols-[1fr_auto_1fr] items-center py-4 px-6 bg-white text-[#313131] border-b border-gray-200">
+        <header className="grid grid-cols-[1fr_auto_1fr] items-center py-2 pl-8 pr-6 bg-white text-[#313131] border-b border-gray-200">
           {/* Left: logo + title in brand blue */}
           <div className="flex items-center gap-3 justify-self-start">
                             <Link
                     to="/dashboard"
                     className="flex items-center space-x-2 text-[#3F4F83] hover:opacity-90 transition-all duration-200"
                 >
-                    <LogoMark className="w-8 h-8 text-current scale-150" />
+                    <LogoMark className="w-8 h-8 text-current" />
                     <h3 className="text-2xl text-current px-3">SkillSwap</h3>
                     </Link>
           </div>
@@ -581,8 +1396,8 @@ export default function DashboardPage() {
               { label: "Profile", href: "/profile" },
             ].map((item, idx) => {
               const isActive = item.label === "Dashboard";
-              const base =
-                "no-underline focus:outline-none focus:ring-2 focus:ring-[#3F4F83] rounded-sm px-2 py-1";
+				const base =
+				  "no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3F4F83] rounded-sm px-2 py-1";
               const cls = isActive
                 ? `font-semibold !text-[#3F4F83] ${base}`
                 : `font-normal !text-[#313131] ${base}`;
@@ -603,18 +1418,18 @@ export default function DashboardPage() {
 
           {/* Right: username + avatar (no background box), click to toggle dropdown */}
           <div className="relative justify-self-end">
-            <button
-              ref={toggleRef}
-              type="button"
-              onClick={onToggleClick}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              aria-controls="account-menu"
-              className="flex items-center gap-3 text-[#313131]
-                         !bg-transparent hover:!bg-transparent active:!bg-transparent focus:!bg-transparent
-                         shadow-none hover:shadow-none active:shadow-none
-                         focus:outline-none focus:ring-2 focus:ring-[#3F4F83] focus:ring-offset-0 rounded-sm"
-            >
+			<button
+			  ref={toggleRef}
+			  type="button"
+			  onClick={onToggleClick}
+			  aria-haspopup="menu"
+			  aria-expanded={menuOpen}
+			  aria-controls="account-menu"
+			  className="flex items-center gap-3 text-[#313131]
+						 !bg-transparent hover:!bg-transparent active:!bg-transparent focus:!bg-transparent
+						 shadow-none hover:shadow-none active:shadow-none
+						 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3F4F83] focus-visible:ring-offset-0 rounded-sm"
+			>
               <span className="hidden sm:inline-block text-sm">
                 {safeName(currentUser.firstName, currentUser.lastName)}
               </span>
@@ -643,7 +1458,7 @@ export default function DashboardPage() {
         </header>
 
         {/* Body (Off-White surface; NO extra inner white container) */}
-        <main className="flex-1 bg-[#F7F8FC] px-6 py-6">
+        <main className="flex-1 bg-[#F7F8FC] px-6 pt-4 pb-6">
           <h1 className="sr-only">Dashboard</h1>
 
           <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-6">
@@ -715,7 +1530,7 @@ export default function DashboardPage() {
                 ) : recentPeople.length === 0 ? (
                   <div className="h-24 grid place-items-center text-gray-500">Make connections!</div>
                 ) : (
-                  <div role="list" className="grid gap-3">
+                  <div role="list" ref={recentsListRef} className="grid gap-3">
                     {recentPeople.map((p) => (
                       <PersonRow key={p.userId} data={p} />
                     ))}
@@ -724,239 +1539,182 @@ export default function DashboardPage() {
               </section>
             </div>
 
-                      {/* ----- Manage My Skills ----- */}
-                          <section
-                            aria-labelledby="manage-skills"
-                            className="bg-white rounded-xl shadow p-5 border border-gray-200"
-                          >
-                            <h2 id="manage-skills" className="text-lg font-medium text-gray-800 mb-3">
-                              Manage My Skills
-                            </h2>
-
-                            {/* Inline feedback message */}
-                            {feedback && (
-                              <div
-                                className={`text-sm mb-3 px-3 py-2 rounded-md ${
-                                  feedbackType === "success"
-                                    ? "bg-green-100 text-green-800"
-                                    : "bg-red-100 text-red-800"
-                                }`}
-                              >
-                                {feedback}
-                              </div>
-                            )}
-
-                            {/* Add Skill Form */}
-                            <form
-                              onSubmit={async (e) => {
-                                e.preventDefault();
-                                const form = e.currentTarget;
-                                const skillName = (form.elements.namedItem("skillName") as HTMLInputElement).value.trim();
-                                const type = (form.elements.namedItem("type") as HTMLSelectElement).value;
-                                const token = localStorage.getItem("token");
-
-                                if (!skillName) {
-                                  setFeedback("Please enter a skill name.");
-                                  setFeedbackType("error");
-                                  return;
-                                }
-
-                                try {
-                                  const res = await fetch(`${API_ROOT}/addskill`, {
-                                    method: "POST",
-                                    headers: {
-                                      "Content-Type": "application/json",
-                                      Authorization: `Bearer ${token}`,
-                                    },
-                                    body: JSON.stringify({ SkillName: skillName, Type: type }),
-                                  });
-
-                                  if (res.ok) {
-                                    setFeedback(`"${skillName}" added successfully!`);
-                                    setFeedbackType("success");
-                                    form.reset();
-                                  } else {
-                                    setFeedback("Failed to add skill. Try again.");
-                                    setFeedbackType("error");
-                                  }
-                                } catch (err) {
-                                  console.error(err);
-                                  setFeedback("Error connecting to the server.");
-                                  setFeedbackType("error");
-                                }
-                              }}
-                              className="flex flex-col sm:flex-row gap-3 items-center"
-                            >
-                              <input
-                                name="skillName"
-                                type="text"
-                                placeholder="Enter a skill name..."
-                                className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-[#3F4F83] focus:outline-none"
-                              />
-                              <select
-                                name="type"
-                                className="border border-gray-300 rounded-md px-2 py-2 text-sm focus:ring-2 focus:ring-[#3F4F83] focus:outline-none"
-                              >
-                                <option value="offer">Offer</option>
-                                <option value="need">Need</option>
-                              </select>
-                              <button
-                                type="submit"
-                                className="bg-[#3F4F83] text-white px-4 py-2 rounded-md font-medium hover:bg-[#2e3b6b] transition"
-                              >
-                                Add Skill
-                              </button>
-                            </form>
-
-                            {/* View All Skills Section (Modal-based) */}
-                                <div className="mt-6">
-                                  <button
-                                    onClick={async () => {
-                                      const token = localStorage.getItem("token");
-                                      if (!token) {
-                                        setFeedback("Not logged in.");
-                                        setFeedbackType("error");
-                                        return;
-                                      }
-
-                                      try {
-                                        const res = await fetch(`${API_ROOT}/myskills`, {
-                                          headers: { Authorization: `Bearer ${token}` },
-                                        });
-                                        if (!res.ok) throw new Error(await res.text());
-                                        const data = await res.json();
-                                        const mySkills = data.mySkills || [];
-
-                                        setSkills(mySkills); // ✅ Save to existing skills state
-                                        setShowSkillsModal(true); // ✅ open the modal
-                                      } catch (err) {
-                                        console.error(err);
-                                        setFeedback("Failed to fetch skills.");
-                                        setFeedbackType("error");
-                                      }
-                                    }}
-                                    className="bg-[#3F4F83] text-white px-4 py-2 rounded-md font-medium hover:bg-[#2e3b6b] transition"
-                                  >
-                                    Show All My Skills
-                                  </button>
-                                </div>
-
-                                {/* Skills Modal */}
-                                {showSkillsModal && (
-                                  <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-                                    <div className="bg-white rounded-xl shadow-xl p-6 w-[min(400px,90vw)]">
-                                      <h3 className="text-lg font-semibold text-[#3F4F83] mb-3">My Skills</h3>
-
-                                      {skills && skills.length > 0 ? (
-                                        <ul className="max-h-[250px] overflow-y-auto divide-y divide-gray-200 mb-4">
-                                            {skills.map((s) => (
-                                              <li
-                                                key={s.SkillName}
-                                                className="flex justify-between items-center py-2"
-                                              >
-                                                <div className="flex items-center gap-2">
-                                                  <span className="text-sm text-gray-800 font-medium">{s.SkillName}</span>
-                                                  <span
-                                                    className={`text-xs font-semibold ${
-                                                      s.Type === "offer"
-                                                        ? "text-green-700 bg-green-100 px-2 py-[1px] rounded-md"
-                                                        : "text-blue-700 bg-blue-100 px-2 py-[1px] rounded-md"
-                                                    }`}
-                                                  >
-                                                    {s.Type === "offer" ? "Offer" : "Need"}
-                                                  </span>
-                                                </div>
-
-                                                <button
-                                                  onClick={async () => {
-                                                    if (!confirm(`Delete "${s.SkillName}"?`)) return;
-                                                    const success = await deleteSkill(s.SkillName);
-                                                    if (success) {
-                                                      setFeedback(`"${s.SkillName}" deleted successfully.`);
-                                                      setFeedbackType("success");
-                                                      setSkills((prev) =>
-                                                        (prev ?? []).filter((x) => x.SkillName !== s.SkillName)
-                                                      );
-                                                    } else {
-                                                      setFeedback("Failed to delete skill.");
-                                                      setFeedbackType("error");
-                                                    }
-                                                  }}
-                                                  className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded-md hover:bg-red-200"
-                                                >
-                                                  🗑 Delete
-                                                </button>
-                                              </li>
-                                            ))}
-                                          </ul>
-
-                                      ) : (
-                                        <p className="text-sm text-gray-500 mb-4">You haven’t added any skills yet.</p>
-                                      )}
-
-
-                                      <div className="flex justify-end">
-                                        <button
-                                          onClick={() => setShowSkillsModal(false)}
-                                          className="bg-[#3F4F83] text-white px-4 py-2 rounded-md text-sm hover:bg-[#2e3b6b] transition"
-                                        >
-                                          Close
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </div>
-                                )}
-
-                          </section>
-
             {/* RIGHT */}
             <div className="flex flex-col gap-6">
-              {/* Search (UI only) */}
-              <div className="w-full">
-                <label htmlFor="dashSearch" className="block text-sm font-medium text-gray-800 mb-2">
-                  Search for users, skills, etc.
-                </label>
-                <div className="flex items-stretch gap-2">
-                  <input
-                    id="dashSearch"
-                    className="flex-1 rounded-full border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#3F4F83]"
-                    placeholder="Search for users, skills, etc…"
-                    aria-describedby="searchHelp"
-                  />
-                  <button
-                    type="button"
-                    className="shrink-0 w-10 h-10 rounded-full bg-[#3F4F83] grid place-items-center hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#3F4F83]"
-                    aria-label="Search (not wired yet)"
-                  >
-                    <img src={SearchIcon} alt="" className="w-5 h-5 filter invert" />
-                  </button>
-                </div>
-                <p id="searchHelp" className="sr-only">
-                  Press Enter or the button to search.
-                </p>
-              </div>
+				{/* Search (UI only) */}
+				<div className="w-full" ref={searchWrapRef}>
+				  {/* White pill input container (positioning anchor) */}
+				  <div className="relative bg-white rounded-full shadow-sm border border-gray-300 pl-4 pr-16 py-2 overflow-visible">
+					<input
+					  ref={searchInputRef}
+					  id="dashSearch"
+					  className="w-full bg-transparent border-0 outline-none text-sm text-[#313131] placeholder:text-gray-500"
+					  placeholder="Search for users"
+					  aria-describedby="searchHelp"
+					  value={searchQuery}
+					  onChange={(e) => setSearchQuery(e.target.value)}
+					  onFocus={() => setSearchOpen(true)}
+					/>
 
-              {/* Suggested Connections */}
-              <section aria-labelledby="suggested-connections">
-                <h2 id="suggested-connections" className="text-lg sm:text-xl font-medium text-gray-800 mb-3">
-                  Suggested Connections
-                </h2>
-                {matchesError && <div className="text-sm text-red-600">{matchesError}</div>}
-                {matches === null ? (
-                  <div className="text-sm text-gray-500">Loading…</div>
-                ) : suggestedPeople.length === 0 ? (
-                  <div className="text-sm text-gray-500">No suggestions yet.</div>
-                ) : (
-                  <div role="list" className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {suggestedPeople.map((p) => (
-                      <PersonRow key={p.userId} data={p} />
-                    ))}
-                  </div>
-                )}
-              </section>
+					{/* Circular button docked flush to the right INSIDE the pill (cosmetic only) */}
+					<button
+					  type="button"
+					  className="absolute right-0 top-1/2 -translate-y-1/2
+								 w-10 h-10 p-0 rounded-full
+								 !bg-transparent !border-0 !shadow-none appearance-none leading-none
+								 hover:opacity-90 focus:outline-none
+								 focus-visible:ring-2 focus-visible:ring-[#3F4F83] focus-visible:ring-offset-2 focus-visible:ring-offset-white"
+					  aria-label="Search"
+					>
+					  {/* Blue circle fills the button area exactly */}
+					  <span className="absolute inset-0 rounded-full bg-[#3F4F83] overflow-hidden" />
+					  {/* Icon centered within the circle */}
+					  <SearchIcon
+						className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2
+								   w-7 h-7 text-white block pointer-events-none"
+						aria-hidden="true"
+					  />
+					</button>
+
+					{/* Dropdown (only when input has content and is focused/open) */}
+					{searchOpen && searchQuery.trim() && rankedResults.length > 0 && (
+					  <div
+              role="listbox"
+              aria-label="User search results"
+              className="absolute left-0 right-0 top-[calc(100%+6px)] z-40
+                        bg-white border border-gray-200 rounded-xl shadow-lg
+                        max-h-[320px] overflow-y-auto"
+            >
+
+						{rankedResults.map((u) => {
+						  const incomingId = incomingMap.get(u.id);
+						  const isIncoming = Boolean(incomingId);
+						  const alreadySent = requestSent.has(u.id);
+						  const label = isIncoming ? "Accept Request" : (alreadySent ? "Requested" : "Send Request");
+
+						  const onAction = () => {
+              if (isIncoming && incomingId) {
+                onAcceptIncoming(incomingId, u.id);
+              } else if (!alreadySent) {
+                onSendRequest(u.id);
+                showToast("success", "Request sent");
+              }
+            };
+
+						  const rightPillDisabled = isIncoming ? false : alreadySent;
+
+						  return (
+							<div
+							  key={u.id}
+							  role="option"
+							  className="group relative flex items-center justify-between px-3 py-2 border-b last:border-b-0 border-gray-100 hover:bg-gray-50"
+							>
+							  <div className="flex items-center gap-2 min-w-0">
+								<Avatar />
+								<div className="min-w-0">
+								  <div className="text-sm font-medium text-gray-900 truncate">
+									{safeName(u.firstName, u.lastName)}
+								  </div>
+								  <div className="text-xs text-gray-600 truncate">
+									{u.email ? u.email : `ID #${u.id}`}
+								  </div>
+								</div>
+							  </div>
+								<span
+								  role="button"
+								  tabIndex={rightPillDisabled ? -1 : 0}
+								  aria-disabled={rightPillDisabled || undefined}
+								  onClick={() => { if (!rightPillDisabled) onAction(); }}
+								  onKeyDown={(e) => {
+									if (!rightPillDisabled && (e.key === "Enter" || e.key === " ")) {
+									  e.preventDefault();
+									  onAction();
+									}
+								  }}
+								  className={[
+									// hover-in reveal (keeps the same behavior)
+									"opacity-0 group-hover:opacity-100 transition mr-1",
+									"inline-flex items-center justify-center rounded-full text-xs font-medium",
+									// spacing kept deliberately small for a compact pill
+									"px-2 py-1",
+									// focus ring for a11y
+									"focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3F4F83]",
+									// cursor state
+									rightPillDisabled ? "cursor-not-allowed" : "cursor-pointer"
+								  ].join(" ")}
+								  // Inline styles ensure global .button selectors cannot override the pill
+								  style={{
+									backgroundColor: (isIncoming || !alreadySent) ? "#3F4F83" : "#d1d5db", // blue or gray
+									color:           (isIncoming || !alreadySent) ? "#ffffff" : "#1f2937", // white or gray-800
+									border: "none",
+									boxShadow: "none",
+									lineHeight: 1,
+									// extra guards against global resets
+									WebkitAppearance: "none",
+									MozAppearance: "none",
+									appearance: "none",
+								  }}
+								>
+								  {label}
+								</span>
+							</div>
+						  );
+						})}
+					  </div>
+					)}
+				  </div>
+
+				  <p id="searchHelp" className="sr-only">
+					Start typing to search. Press the pill on the right of a result to take action.
+				  </p>
+				</div>
+				{/* Suggested Connections */}
+				<section aria-labelledby="suggested-connections">
+				  <h2
+					id="suggested-connections"
+					className="text-lg sm:text-xl font-medium text-gray-800 mb-3"
+				  >
+					Suggested Connections
+				  </h2>
+
+				  {matchesError && <div className="text-sm text-red-600">{matchesError}</div>}
+
+				  {matches === null ? (
+					<div className="text-sm text-gray-500">Loading…</div>
+				  ) : suggestedPeople.length === 0 ? (
+					  <div className="h-24 grid place-items-center text-gray-500">No suggestions yet.</div>
+					) : (
+					<div
+					  role="list"
+					  className={`grid grid-cols-1 sm:grid-cols-2 ${
+						justifySuggested ? "gap-x-4 gap-y-0 content-between" : "gap-4"
+					  }`}
+					  style={
+						justifySuggested && suggestedMinHeight
+						  ? { height: suggestedMinHeight }
+						  : undefined
+					  }
+					>
+					  {suggestedCapped.map((p) => (
+						// REPLACE the SuggestedPersonButton JSX in the map
+						<SuggestedPersonButton
+						  key={p.userId}
+						  data={p}
+						  onSendRequest={onSendRequest}
+						  onAcceptRequest={onAcceptIncoming}
+						  isBusy={requestInFlight.has(p.userId)}
+						  isSent={requestSent.has(p.userId)}
+						  isIncoming={incomingMap.has(p.userId)}
+						  incomingRequestId={incomingMap.get(p.userId)}
+						/>
+					  ))}
+					</div>
+				  )}
+				</section>
             </div>
           </div>
         </main>
+		<ToastHost toasts={toasts} onDismiss={dismissToast} />
       </div>
     </div>
   );
