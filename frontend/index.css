@@ -56,12 +56,12 @@
     cursor: pointer;
     transition: border-color 0.25s;
   }
-  button:hover {
-    border-color: #646cff;
-  }
-  button:focus,
   button:focus-visible {
-    outline: 4px auto -webkit-focus-ring-color;
+    outline: 3px solid #3F4F83;
+    outline-offset: 2px;
+  }
+  button:focus:not(:focus-visible) {
+    outline: none;
   }
 
   @media (prefers-color-scheme: light) {
@@ -76,3 +76,15 @@
       background-color: #f9f9f9;
     }
   }
+*:focus:not(:focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
+}
+/* === Hide scrollbars but keep scroll functionality === */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
