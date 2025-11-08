@@ -1,6 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+// REPLACE the React import to include useRef/useCallback  [ANCHOR: top React import]
+import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { useNavigate } from 'react-router-dom';
 import { Link } from "react-router-dom";
+import { io } from "socket.io-client";
 
 
 
@@ -19,6 +21,9 @@ const API_BASE =
   (import.meta as any)?.env?.VITE_API_BASE ?? "https://poosd24.live/api";
 const TOKEN_KEY = "token";
 const USER_ID_KEY = "userId";
+// INSERT: Name keys for navbar display  [ANCHOR: after USER_ID_KEY]
+const FIRST_NAME_KEY = "firstName";
+const LAST_NAME_KEY = "lastName";
 
 function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -91,6 +96,15 @@ function formatName(fullName: string) {
   return `${first} ${lastInitial}`.trim();
 }
 
+// INSERT: safeName used by navbar (Firstname L. fallback)  [ANCHOR: after formatName()]
+function safeName(first?: string | null, last?: string | null) {
+  const f = first ?? "";
+  const l = last ?? "";
+  if (!f && !l) return "Firstname L.";
+  if (f && l) return `${f} ${l[0]}.`;
+  return f || l || "Firstname L.";
+}
+
 function timeAgo(iso?: string) {
   if (!iso) return "";
   const diff = Date.now() - new Date(iso).getTime();
@@ -143,6 +157,14 @@ async function deleteMessage(id: string) {
   if (!token) throw new Error("Not authenticated");
   await apiFetch(`/messages/${id}`, { method: "DELETE", token });
 }
+
+// INSERT AFTER: async function deleteMessage(id: string) { ... }
+async function deleteConversation(partnerId: number) {
+  const token = getToken();
+  if (!token) throw new Error("Not authenticated");
+  await apiFetch(`/conversations/${partnerId}`, { method: "DELETE", token });
+}
+
 async function searchUsers(name: string) {
   if (!name.trim()) return [];
   const token = getToken();
@@ -166,8 +188,43 @@ const Avatar = ({ src }: { src?: string | null }) => (
 );
 
 export default function MessagesPage() {
+  const socket = useMemo(() => io("https://poosd24.live"), []);
   const me = getUserId();
   const partnerId = getQueryPartner();
+
+// INSERT: currentUser (name for navbar) + account menu controls  [ANCHOR: after partnerId]
+const currentUser = useMemo(
+  () => ({
+    firstName: localStorage.getItem(FIRST_NAME_KEY),
+    lastName: localStorage.getItem(LAST_NAME_KEY),
+  }),
+  []
+);
+
+	const [menuOpen, setMenuOpen] = useState(false);
+	const toggleRef = useRef<HTMLButtonElement | null>(null);
+	const menuRef = useRef<HTMLDivElement | null>(null);
+
+	const onToggleClick = useCallback(() => setMenuOpen((v) => !v), []);
+	const onGlobalPointerDown = useCallback((e: MouseEvent | PointerEvent) => {
+	  if (!menuOpen) return;
+	  const t = e.target as Node | null;
+	  if (menuRef.current && menuRef.current.contains(t)) return;
+	  if (toggleRef.current && toggleRef.current.contains(t)) return;
+	  setMenuOpen(false);
+	}, [menuOpen]);
+	const onKeyDown = useCallback((e: KeyboardEvent) => {
+	  if (e.key === "Escape" && menuOpen) setMenuOpen(false);
+	}, [menuOpen]);
+
+	useEffect(() => {
+	  document.addEventListener("pointerdown", onGlobalPointerDown);
+	  document.addEventListener("keydown", onKeyDown);
+	  return () => {
+		document.removeEventListener("pointerdown", onGlobalPointerDown);
+		document.removeEventListener("keydown", onKeyDown);
+	  };
+	}, [onGlobalPointerDown, onKeyDown]);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -184,8 +241,8 @@ export default function MessagesPage() {
   const [inboxPage, setInboxPage] = useState(1);
   const INBOX_PAGE_SIZE = 6;
 
-  // delete modal
-  const [confirmId, setConfirmId] = useState<string | null>(null);
+// REPLACE the per-message confirm id with a per-conversation partner id
+const [confirmPartnerId, setConfirmPartnerId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!getToken()) {
@@ -194,6 +251,28 @@ export default function MessagesPage() {
     }
     refreshMessages();
   }, []);
+
+  // ⏱ Poll messages every 3 seconds (no backend changes needed)
+useEffect(() => {
+  const interval = setInterval(() => {
+    refreshMessages();
+  }, 500);
+  return () => clearInterval(interval);
+}, []);
+
+
+  // 👇 Listen for live updates from backend
+useEffect(() => {
+  socket.on("receive_message", (msg) => {
+    // Only show it if it's part of my thread or inbox
+    setMessages((prev) => [...prev, msg]);
+  });
+
+  return () => {
+    socket.off("receive_message");
+  };
+}, [socket]);
+
 
   useEffect(() => {
     if (partnerId != null) setSelectedUserId(partnerId);
@@ -303,14 +382,24 @@ export default function MessagesPage() {
     await refreshMessages();
   }
 
-  async function handleSendThread(e: React.FormEvent) {
-    e.preventDefault();
-    const targetId = partnerId;
-    if (!targetId || !body.trim()) return;
-    await sendMessage(targetId, body.trim());
-    setBody("");
-    await refreshMessages();
-  }
+ async function handleSendThread(e: React.FormEvent) {
+  e.preventDefault();
+  const targetId = partnerId;
+  if (!targetId || !body.trim()) return;
+
+  // Immediately send to backend socket
+  socket.emit("send_message", {
+    from: me,
+    to: targetId,
+    body: body.trim(),
+  });
+
+  // Still save to DB via API (safe redundancy)
+  await sendMessage(targetId, body.trim());
+
+  setBody("");
+}
+
 
   async function handleRecipientType(name: string) {
     setToName(name);
@@ -324,12 +413,13 @@ export default function MessagesPage() {
     }
   }
 
-  async function handleConfirmDelete() {
-    if (!confirmId) return;
-    await deleteMessage(confirmId);
-    setConfirmId(null);
-    await refreshMessages();
-  }
+// REPLACE: async function handleConfirmDelete() { ... }
+async function handleConfirmDelete() {
+  if (confirmPartnerId == null) return;
+  await deleteConversation(confirmPartnerId);
+  setConfirmPartnerId(null);
+  await refreshMessages();
+}
 
   // partner name = the OTHER person
   const partnerName = useMemo(() => {
@@ -347,117 +437,94 @@ export default function MessagesPage() {
   return (
     <div className="min-h-screen grid place-items-center bg-slate-200">
       <div className="bg-white text-black rounded-2xl shadow-lg w-[min(1100px,92vw)] min-h-[78vh] overflow-hidden flex flex-col">
-        {/* NAVBAR */}
-       <header className="flex justify-between items-center py-4 px-6 bg-white border-b border-gray-200">
-        {/* Left side: Logo + text */}
-          <div className="flex items-center gap-3 justify-self-start">
-                            <Link
-                    to="/dashboard"
-                    className="flex items-center space-x-2 text-[#3F4F83] hover:opacity-90 transition-all duration-200"
-                >
-                    <LogoMark className="w-8 h-8 text-current scale-150" />
-                    <h3 className="text-2xl text-current px-3">SkillSwap</h3>
-                    </Link>
-          </div>
+		<header className="grid grid-cols-[1fr_auto_1fr] items-center py-2 pl-8 pr-6 bg-white text-[#313131] border-b border-gray-200">
+		  {/* Left: logo + brand */}
+		  <div className="flex items-center gap-3 justify-self-start">
+			<Link
+			  to="/dashboard"
+			  className="flex items-center space-x-2 text-[#3F4F83] hover:opacity-90 transition-all duration-200"
+			>
+			  <LogoMark className="w-8 h-8 text-current" />
+			  <h3 className="text-2xl text-current px-3">SkillSwap</h3>
+			</Link>
+		  </div>
 
-        {/* Right side: Navigation */}
-        <nav className="flex items-center gap-0 text-sm">
-          {[
-            { label: "Dashboard", href: "/dashboard" },
-            { label: "Offers", href: "/offers" },
-            { label: "Messages", href: "/messages" },
-            { label: "Profile", href: "/profile" },
-          ].map((item, idx) => {
-            const isActive = item.label === "Messages";
-            const base =
-              "no-underline focus:outline-none focus:ring-2 focus:ring-[#3F4F83] rounded-sm px-2 py-1";
-            const cls = isActive
-              ? `font-semibold !text-[#3F4F83] ${base}`
-              : `font-normal !text-[#313131] ${base}`;
-            return (
-              <div key={item.label} className="flex items-center">
-                <a
-                  href={item.href}
-                  className={cls}
-                  aria-current={isActive ? "page" : undefined}
-                >
-                  {item.label}
-                </a>
-                {idx < 3 && (
-                  <span className="mx-2 text-black opacity-80" aria-hidden="true">
-                    •
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </nav>
-      </header>
+		  {/* Center: nav items with bullets */}
+		  <nav className="flex items-center justify-center gap-0 text-sm">
+			{[
+			  { label: "Dashboard", href: "/dashboard" },
+			  { label: "Offers", href: "/offers" },
+			  { label: "Messages", href: "/messages" },
+			  { label: "Profile", href: "/profile" },
+			].map((item, idx) => {
+			  const isActive = item.label === "Messages";
+			  const base =
+				"no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3F4F83] rounded-sm px-2 py-1";
+			  const cls = isActive
+				? `font-semibold !text-[#3F4F83] ${base}`
+				: `font-normal !text-[#313131] ${base}`;
+			  return (
+				<div key={item.label} className="flex items-center">
+				  <a
+					href={item.href}
+					className={cls}
+					aria-current={isActive ? "page" : undefined}
+				  >
+					{item.label}
+				  </a>
+				  {idx < 3 && (
+					<span className="mx-2 text-black opacity-80" aria-hidden="true">
+					  •
+					</span>
+				  )}
+				</div>
+			  );
+			})}
+		  </nav>
 
+		  {/* Right: username + avatar with dropdown */}
+		  <div className="relative justify-self-end">
+			<button
+			  ref={toggleRef}
+			  type="button"
+			  onClick={onToggleClick}
+			  aria-haspopup="menu"
+			  aria-expanded={menuOpen}
+			  aria-controls="account-menu"
+			  className="flex items-center gap-3 text-[#313131]
+						 !bg-transparent hover:!bg-transparent active:!bg-transparent focus:!bg-transparent
+						 shadow-none hover:shadow-none active:shadow-none
+						 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3F4F83] focus-visible:ring-offset-0 rounded-sm"
+			>
+			  <span className="hidden sm:inline-block text-sm">
+				{safeName(currentUser.firstName, currentUser.lastName)}
+			  </span>
+			  <Avatar />
+			</button>
 
-        <main className="flex-1 bg-[#F7F8FC] px-6 py-6">
+			{menuOpen && (
+			  <div
+				id="account-menu"
+				ref={menuRef}
+				role="menu"
+				className="absolute right-0 mt-2 !bg-white text-[#313131] rounded-md shadow-lg border border-gray-200 min-w-40 z-50"
+			  >
+				<button
+				  onClick={() => (window.location.href = "/signout")}
+				  className="w-full text-left px-4 py-2 text-sm text-red-600 !bg-white hover:bg-red-50 rounded-md"
+				  role="menuitem"
+				  type="button"
+				>
+				  Sign Out
+				</button>
+			  </div>
+			)}
+		  </div>
+		</header>
+
+        <main className="flex-1 bg-[#F7F8FC] px-6 pt-4 pb-6 overflow-y-auto">
           {!isThread ? (
             <>
-              <h1 className="text-3xl sm:text-4xl font-extrabold text-[#1F2A44] mb-5">
-                Messages
-              </h1>
-
-              {/* COMPOSER (LIST VIEW) */}
-              <section className="bg-white rounded-xl border border-gray-200 shadow w-full mb-5 p-4">
-                <form
-                  onSubmit={handleSendList}
-                  className="grid gap-3 sm:grid-cols-[260px,1fr,auto] items-center"
-                >
-                  <div className="relative">
-                    <input
-                      type="text"
-                      placeholder="Recipient name"
-                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-[#3F4F83]"
-                      value={toName}
-                      onChange={(e) => handleRecipientType(e.target.value)}
-                      required
-                    />
-                    {searchResults.length > 0 && (
-                      <ul className="absolute left-0 right-0 bg-white border border-gray-300 rounded shadow mt-1 z-10 max-h-40 overflow-y-auto">
-                        {searchResults.map((u) => (
-                          <li
-                            key={u.UserID}
-                            className="px-3 py-1 text-sm hover:bg-gray-100 cursor-pointer"
-                            onClick={() => {
-                              setToName(`${u.FirstName} ${u.LastName}`);
-                              setSelectedUserId(u.UserID);
-                              setSearchResults([]);
-                            }}
-                          >
-                            {u.FirstName} {u.LastName}{" "}
-                            <span className="text-gray-400 text-xs">(ID {u.UserID})</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-
-                  <input
-                    type="text"
-                    placeholder="Type a message…"
-                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#3F4F83]"
-                    value={body}
-                    onChange={(e) => setBody(e.target.value)}
-                    required
-                  />
-
-                  <button
-                    type="submit"
-                    className="rounded-lg !bg-[#3F4F83] !text-white px-5 py-2 text-sm font-semibold hover:!bg-[#2e3b6b] disabled:opacity-60 inline-flex items-center gap-2"
-                    disabled={!selectedUserId || !body.trim()}
-                    title={!selectedUserId ? "Select a recipient" : "Send message"}
-                  >
-                    <SendIcon size={16} />
-                    Send
-                  </button>
-                </form>
-              </section>
-
               {/* SEARCH BAR */}
               <div className="flex items-stretch gap-2 w-full mb-4">
                 <input
@@ -505,18 +572,18 @@ export default function MessagesPage() {
                         </div>
                         <div className="text-sm text-gray-600 truncate">{r.preview}</div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmId(r.id);
-                        }}
-                        className="!text-red-600 !border !border-red-200 hover:!border-red-300 hover:!bg-red-50 rounded-lg text-sm px-3 py-1 inline-flex items-center gap-1"
-                        title="Delete"
-                      >
-                        <Trash2 size={16} />
-                        Delete
-                      </button>
+					<button
+					  type="button"
+					  onClick={(e) => {
+						e.stopPropagation();
+						setConfirmPartnerId(r.partnerId); // delete ENTIRE thread with this partner
+					  }}
+					  className="!text-red-600 !border !border-red-200 hover:!border-red-300 hover:!bg-red-50 rounded-lg text-sm px-3 py-1 inline-flex items-center gap-1"
+					  title="Delete conversation"
+					>
+					  <Trash2 size={16} />
+					  Delete
+					</button>
                     </div>
                   ))}
 
@@ -644,18 +711,19 @@ export default function MessagesPage() {
         </main>
       </div>
 
-      {/* DELETE MODAL */}
-      {confirmId && (
+      {confirmPartnerId != null && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-xl p-6 w-[min(420px,90vw)] border border-gray-200">
             <h3 className="text-lg font-semibold text-[#3F4F83] mb-2">
-              Delete message?
+              Delete conversation?
             </h3>
-            <p className="text-sm text-gray-700 mb-4">This can’t be undone.</p>
+            <p className="text-sm text-gray-700 mb-4">
+              This will permanently delete the entire chat history between you and user ID {confirmPartnerId}. This can’t be undone.
+            </p>
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setConfirmId(null)}
+                onClick={() => setConfirmPartnerId(null)}
                 className="px-4 py-2 text-sm rounded-md border border-gray-300 bg-white hover:bg-gray-50"
               >
                 Cancel
