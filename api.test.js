@@ -1,62 +1,77 @@
 /**
  * @jest-environment node
  */
-const request = require("supertest");
-const express = require("express");
-const jwt = require("jsonwebtoken");
-const apiRoutes = require("../api.js");
-const mongoose = require("mongoose");
+const request = require('supertest');
+const express = require('express');
+const jwt = require('jsonwebtoken');
+const apiRoutes = require('../api.js');
 
-process.env.ACCESS_TOKEN_SECRET = "test_secret";
+// Set secret for JWT during tests
+process.env.ACCESS_TOKEN_SECRET = 'test_secret';
 
-// 🧩 Mock DB models so tests run without connecting
-jest.mock("../models/skill", () => ({
-  find: jest.fn().mockResolvedValue([{ SkillName: "JavaScript" }]),
+// 🧩 Mock database models to isolate backend logic
+jest.mock('../models/skill', () => ({
+  find: jest.fn().mockResolvedValue([{ SkillName: 'JavaScript' }]),
   findOne: jest.fn(),
   create: jest.fn(),
-  deleteOne: jest.fn(),
+  deleteOne: jest.fn()
 }));
-jest.mock("../models/user", () => ({
+
+jest.mock('../models/user', () => ({
   findOne: jest.fn(),
   countDocuments: jest.fn().mockResolvedValue(1),
+  create: jest.fn()
 }));
-jest.mock("../models/message", () => ({}));
-jest.mock("../models/friendRequest", () => ({}));
+
+jest.mock('../models/message', () => ({}));
+jest.mock('../models/friendRequest', () => ({}));
 
 const app = express();
 app.use(express.json());
-app.use("/api", apiRoutes);
+app.use('/api', apiRoutes);
 
-// --- Create dummy token ---
+// Generate valid JWT token for auth routes
 const token = jwt.sign(
-  { userId: 99, firstName: "Unit", lastName: "Tester" },
-  process.env.ACCESS_TOKEN_SECRET // ✅ same secret used for signing
+  { userId: 99, firstName: 'Unit', lastName: 'Tester' },
+  process.env.ACCESS_TOKEN_SECRET
 );
 
-describe("SkillSwap API Routes", () => {
-  test("GET /api/browseskills should return 200 and array of skills", async () => {
-    const res = await request(app).get("/api/browseskills");
+describe('SkillSwap API Routes', () => {
+
+  // ---------- UNIT TESTS ----------
+  test('GET /api/browseskills should return 200 and an array of skills', async () => {
+    const res = await request(app).get('/api/browseskills');
     expect(res.statusCode).toBe(200);
-    expect(res.body.skills[0].SkillName).toBe("JavaScript");
+    expect(res.body.skills[0].SkillName).toBe('JavaScript');
   });
 
-  test("POST /api/addskill should reject if no token", async () => {
-    const res = await request(app).post("/api/addskill").send({ SkillName: "NodeJS" });
-    expect(res.statusCode).toBe(401);
-    expect(res.body.error).toBe("Missing token");
-  });
-
-  test("GET /api/myskills should reject invalid token", async () => {
+  test('POST /api/addskill should reject if no token is provided', async () => {
     const res = await request(app)
-      .get("/api/myskills")
-      .set("Authorization", "Bearer badtoken");
+      .post('/api/addskill')
+      .send({ SkillName: 'NodeJS' });
+    expect(res.statusCode).toBe(401);
+    expect(res.body.error).toBe('Missing token');
+  });
+
+  // ---------- INTEGRATION TESTS ----------
+  test('GET /api/myskills should reject invalid token', async () => {
+    const res = await request(app)
+      .get('/api/myskills')
+      .set('Authorization', 'Bearer badtoken');
     expect(res.statusCode).toBe(403);
   });
 
-  test("GET /api/myskills should accept valid token", async () => {
+  test('GET /api/myskills should accept valid token', async () => {
     const res = await request(app)
-      .get("/api/myskills")
-      .set("Authorization", `Bearer ${token}`);
-    expect([200, 500]).toContain(res.statusCode); // 200 if mocked OK
+      .get('/api/myskills')
+      .set('Authorization', `Bearer ${token}`);
+    expect([200, 500]).toContain(res.statusCode); // 200 if mocks succeed
+  });
+
+  test('POST /api/login should reject invalid user', async () => {
+    const res = await request(app)
+      .post('/api/login')
+      .send({ login: 'fake@user.com', password: 'wrong' });
+    expect([400, 500]).toContain(res.statusCode);
   });
 });
